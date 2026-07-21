@@ -33,10 +33,11 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
       const data = await tableApi.getAll();
       setTables(data);
       
-      // Generate frontend high-res QR codes for each table
+      // Generate frontend high-res QR codes for each table using current domain
       const qrMap: Record<number, string> = {};
+      const currentOrigin = window.location.origin;
       for (const t of data) {
-        const target = t.targetUrl || `${window.location.origin}/table/${t.tableNumber}`;
+        const target = `${currentOrigin}/table/${t.tableNumber}`;
         try {
           const url = await QRCode.toDataURL(target, {
             width: 400,
@@ -103,7 +104,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     try {
       const res = await tableApi.regenerateQr(tableNumber);
       if (res.table) {
-        const target = res.table.targetUrl || `${window.location.origin}/table/${tableNumber}`;
+        const target = `${window.location.origin}/table/${tableNumber}`;
         const newUrl = await QRCode.toDataURL(target, { width: 400, margin: 2 });
         setQrCodeDataUrls(prev => ({ ...prev, [tableNumber]: newUrl }));
         setTables(prev => prev.map(t => t.tableNumber === tableNumber ? res.table : t));
