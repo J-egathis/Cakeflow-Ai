@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
 import { User } from './types';
 import { authApi } from './services/api';
 import { LoginView } from './views/LoginView';
@@ -8,42 +9,32 @@ import { WaiterView } from './views/WaiterView';
 import { CashierView } from './views/CashierView';
 import { AdminView } from './views/AdminView';
 
-function App() {
+// Dedicated Wrapper Component for /table/:tableId route
+function CustomerTableWrapper() {
+  const { tableId } = useParams<{ tableId: string }>();
+  const tableNumber = parseInt(tableId || '1') || 1;
+
+  const tableUser: User = {
+    id: `table_guest_${tableNumber}`,
+    username: `Table ${tableNumber} Guest`,
+    role: 'customer',
+    tableNumber: tableNumber
+  };
+
+  return (
+    <CustomerView 
+      user={tableUser} 
+      onLogout={() => {
+        window.location.href = '/';
+      }} 
+    />
+  );
+}
+
+function MainApp() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   useEffect(() => {
-    // Check for QR code URL table parameter: /table/1, /table/2 or ?table=1
-    const path = window.location.pathname;
-    const searchParams = new URLSearchParams(window.location.search);
-    let detectedTableNumber: number | null = null;
-
-    if (path.includes('/table/')) {
-      const parts = path.split('/table/');
-      if (parts[1]) {
-        const num = parseInt(parts[1]);
-        if (!isNaN(num) && num > 0) {
-          detectedTableNumber = num;
-        }
-      }
-    } else if (searchParams.get('table')) {
-      const num = parseInt(searchParams.get('table') || '');
-      if (!isNaN(num) && num > 0) {
-        detectedTableNumber = num;
-      }
-    }
-
-    if (detectedTableNumber) {
-      const tableUser: User = {
-        id: `table_guest_${detectedTableNumber}`,
-        username: `Table ${detectedTableNumber} Guest`,
-        role: 'customer',
-        tableNumber: detectedTableNumber
-      };
-      setCurrentUser(tableUser);
-      localStorage.setItem('cakeflow_user', JSON.stringify(tableUser));
-      return;
-    }
-
     // Check if user is already logged in
     const user = authApi.getCurrentUser();
     if (user) {
@@ -80,6 +71,15 @@ function App() {
     default:
       return <LoginView onLoginSuccess={handleLoginSuccess} />;
   }
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/table/:tableId" element={<CustomerTableWrapper />} />
+      <Route path="*" element={<MainApp />} />
+    </Routes>
+  );
 }
 
 export default App;
