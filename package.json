@@ -10,7 +10,7 @@
     "client-install": "npm install --prefix client",
     "client-dev": "npm run dev --prefix client",
     "client-build": "npm run build --prefix client",
-    "build": "npm install --prefix client && npm run client-build",
+    "build": "npm run client-build",
     "postinstall": "npm install --prefix client",
     "dev-all": "concurrently \"npm run dev\" \"npm run client-dev\""
   },
