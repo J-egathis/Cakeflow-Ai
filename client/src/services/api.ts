@@ -1,7 +1,12 @@
 import { io, Socket } from 'socket.io-client';
 
 // Determine Backend URL dynamically
-export const BASE_URL = window.location.hostname === 'localhost' ? 'http://localhost:5000' : window.location.origin;
+const RENDER_BACKEND_URL = 'https://cakeflow-ai-1.onrender.com';
+export const BASE_URL = import.meta.env.VITE_BACKEND_URL || (
+  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:5000'
+    : (window.location.origin.includes('onrender.com') ? window.location.origin : RENDER_BACKEND_URL)
+);
 export const API_URL = `${BASE_URL}/api`;
 
 // Fetch wrapper with JWT injection
