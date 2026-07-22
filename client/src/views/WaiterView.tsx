@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Order, Product } from '../types';
-import { orderApi, productApi, getSocket } from '../services/api';
+import { orderApi, productApi, tableApi, getSocket } from '../services/api';
 import { 
   Users, DollarSign, Clock, CheckCircle, AlertCircle, 
   ChevronRight, Plus, HelpCircle, Utensils, Printer, LogOut, RefreshCw 
@@ -14,6 +14,7 @@ interface WaiterViewProps {
 export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [tablesList, setTablesList] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
   const [loading, setLoading] = useState(false);
   
   // States for taking/modifying orders
@@ -23,14 +24,51 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
   const [selectedItems, setSelectedItems] = useState<{ [productId: string]: number }>({});
   const [specialInstructions, setSpecialInstructions] = useState<{ [productId: string]: string }>({});
 
+  const [selectedMainCategory, setSelectedMainCategory] = useState<string>('All');
+  const [selectedSubCategory, setSelectedSubCategory] = useState<string>('All');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  const mainCategories = ['All', 'Juice', 'Snacks', 'Cakes', 'Chats'];
+  
+  const subCategoriesMap: Record<string, string[]> = {
+    'All': [],
+    'Juice': ['All', 'Cold Drinks', 'Hot Drinks', 'Fresh Juice'],
+    'Snacks': ['All', 'Veg Snacks', 'Non-Veg Snacks'],
+    'Cakes': ['All', 'Birthday Cakes', 'Wedding Cakes', 'Cup Cakes', 'Pastries', 'Brownies', 'Cookies'],
+    'Chats': ['All', 'Spicy Chats', 'Sweet Chats']
+  };
+
+  const filteredProducts = products.filter(p => {
+    const safeName = p.name || '';
+    const safeCat = p.category || '';
+
+    let pMainCat = 'All';
+    if (['Birthday Cakes', 'Wedding Cakes', 'Cup Cakes', 'Pastries', 'Brownies', 'Cookies', 'Cakes'].includes(safeCat)) pMainCat = 'Cakes';
+    else if (['Veg Snacks', 'Non-Veg Snacks', 'Snacks'].includes(safeCat)) pMainCat = 'Snacks';
+    else if (['Hot Drinks', 'Cold Drinks', 'Fresh Juice', 'Juice'].includes(safeCat)) pMainCat = 'Juice';
+    else if (['Spicy Chats', 'Sweet Chats', 'Chats'].includes(safeCat)) pMainCat = 'Chats';
+
+    const matchesMain = selectedMainCategory === 'All' || pMainCat === selectedMainCategory;
+    const matchesSub = selectedSubCategory === 'All' || safeCat === selectedSubCategory;
+    const matchesSearch = safeName.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          safeCat.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesMain && matchesSub && matchesSearch;
+  });
+
   const fetchWaiterData = async () => {
     setLoading(true);
     try {
       const ordersData = await orderApi.getAll();
-      // Keep active (non-delivered or unpaid) orders
       setOrders(ordersData);
+
       const productsData = await productApi.getAll();
       setProducts(productsData.filter((p: Product) => p.inStock));
+
+      const tablesData = await tableApi.getAll();
+      if (tablesData && tablesData.length > 0) {
+        const tableNums = tablesData.map((t: any) => Number(t.tableNumber)).sort((a: number, b: number) => a - b);
+        setTablesList(tableNums);
+      }
     } catch (err) {
       console.error('Failed to load waiter data:', err);
     } finally {
@@ -53,14 +91,19 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
       fetchWaiterData();
     });
 
+    socket.on('table_status_updated', () => {
+      fetchWaiterData();
+    });
+
     return () => {
       socket.emit('leave_room', 'waiters');
       socket.off('new_order');
       socket.off('order_updated');
+      socket.off('table_status_updated');
     };
   }, []);
 
-  // Map 1-6 tables to active orders
+  // Map table to active order
   const getTableInfo = (tableNum: number) => {
     // An active order is one that is unpaid or not served
     const activeOrder = orders.find(o => o.tableNumber === tableNum && (o.status !== 'served' || o.paymentStatus === 'unpaid'));
@@ -153,7 +196,7 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
             <h1 className="font-bold text-lg tracking-tight text-slate-100">
               Waiter Service Floor
             </h1>
-            <p className="text-xs text-slate-400 mt-0.5">Table Status and Ordering Panel</p>
+            <p className="text-xs text-slate-400 mt-0.5">Live Table Status and Order Panel ({tablesList.length} Tables Active)</p>
           </div>
         </div>
 
@@ -162,12 +205,12 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
             onClick={fetchWaiterData}
             className="p-2 rounded-xl bg-slate-800/85 border border-slate-700/50 text-slate-400 hover:text-slate-200 transition-colors"
           >
-            <RefreshCw size={15} />
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
           </button>
           
           <button 
             onClick={onLogout}
-            className="text-xs text-slate-400 hover:text-rose-400 bg-slate-800/35 border border-slate-800 px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors"
+            className="text-xs text-slate-400 hover:text-rose-400 bg-slate-800/35 border border-slate-800 px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <LogOut size={13} />
             <span>Sign Out</span>
@@ -179,11 +222,11 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
       <main className="max-w-5xl w-full mx-auto p-6 z-10 space-y-6">
         <div className="flex items-center justify-between border-b border-slate-850 pb-3">
           <h3 className="font-bold text-md text-slate-200">Table Overview</h3>
-          <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">6 Total Tables</span>
+          <span className="text-[10px] uppercase font-bold text-rose-400 tracking-wider font-mono">{tablesList.length} Total Registered Tables</span>
         </div>
 
         <div className="grid md:grid-cols-3 gap-6">
-          {[1, 2, 3, 4, 5, 6].map(num => {
+          {tablesList.map(num => {
             const order = getTableInfo(num);
             const isOccupied = !!order;
             const isReady = order?.status === 'ready';
@@ -268,7 +311,7 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
                       {order.status !== 'served' && (
                         <button
                           onClick={() => handleServe(order._id)}
-                          className="flex-1 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:brightness-110 text-white text-xs font-bold rounded-xl shadow-md"
+                          className="flex-1 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:brightness-110 text-white text-xs font-bold rounded-xl shadow-md cursor-pointer"
                         >
                           Serve Food
                         </button>
@@ -277,7 +320,7 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
                       {order.paymentStatus === 'unpaid' && (
                         <button
                           onClick={() => handleCloseTable(order._id)}
-                          className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700/50"
+                          className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700/50 cursor-pointer"
                         >
                           Close Table
                         </button>
@@ -286,7 +329,7 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
                   ) : (
                     <button
                       onClick={() => { setActiveTable(num); setShowOrderModal(true); }}
-                      className="w-full py-2 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs font-bold rounded-xl border border-slate-850 hover:border-slate-750 transition-all flex items-center justify-center gap-1.5"
+                      className="w-full py-2 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs font-bold rounded-xl border border-slate-850 hover:border-slate-750 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Plus size={13} />
                       <span>Take Order</span>
@@ -307,7 +350,7 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
               <h3 className="font-bold text-md text-slate-100">Take Order - Table {activeTable}</h3>
               <button 
                 onClick={() => { setShowOrderModal(false); setSelectedItems({}); }}
-                className="text-xs text-slate-500 hover:text-slate-300"
+                className="text-xs text-slate-500 hover:text-slate-300 cursor-pointer"
               >
                 Close
               </button>
@@ -318,16 +361,63 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
               <label className="block text-[10px] uppercase font-bold text-slate-500 tracking-wide mb-1.5">Customer Name</label>
               <input 
                 type="text" 
-                placeholder="e.g. Clark Devil"
+                placeholder="e.g. Guest Name"
                 className="w-full bg-slate-950 border border-slate-800 focus:border-rose-500 rounded-xl px-3 py-2 text-xs focus:outline-none text-slate-200"
                 value={modalCustomerName}
                 onChange={(e) => setModalCustomerName(e.target.value)}
               />
             </div>
 
+            {/* Search and Category Filters */}
+            <div className="flex flex-col gap-2 mb-3">
+              <input 
+                type="text" 
+                placeholder="Search menu..."
+                className="w-full bg-slate-950 border border-slate-800 focus:border-rose-500 rounded-xl px-3 py-2 text-xs focus:outline-none text-slate-200"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              
+              {/* Main Categories Bar */}
+              <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-slate-800">
+                {mainCategories.map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => { setSelectedMainCategory(cat); setSelectedSubCategory('All'); }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap border transition-all cursor-pointer ${
+                      selectedMainCategory === cat 
+                        ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white border-transparent' 
+                        : 'bg-slate-950 text-slate-400 border-slate-850 hover:bg-slate-900 hover:text-slate-200'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+
+              {/* Sub Categories Bar */}
+              {subCategoriesMap[selectedMainCategory].length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-slate-800">
+                  {subCategoriesMap[selectedMainCategory].map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => setSelectedSubCategory(cat)}
+                      className={`px-2.5 py-1 rounded-md text-[10px] font-medium whitespace-nowrap border transition-all cursor-pointer ${
+                        selectedSubCategory === cat 
+                          ? 'bg-slate-800 text-rose-400 border-rose-500/50' 
+                          : 'bg-slate-950 text-slate-500 border-slate-850 hover:bg-slate-800 hover:text-slate-300'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Menu scroll area */}
             <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin scrollbar-thumb-slate-800">
-              {products.map(p => {
+              {filteredProducts.map(p => {
                 const qty = selectedItems[p._id] || 0;
                 return (
                   <div key={p._id} className="bg-slate-950/40 p-3.5 rounded-2xl border border-slate-850 flex justify-between items-center gap-3">
@@ -353,14 +443,14 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
                       <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1">
                         <button 
                           onClick={() => updateItemQty(p._id, -1)}
-                          className="px-2 py-0.5 text-xs text-slate-400 hover:text-white"
+                          className="px-2 py-0.5 text-xs text-slate-400 hover:text-white cursor-pointer"
                         >
                           -
                         </button>
                         <span className="text-xs font-bold w-4 text-center">{qty}</span>
                         <button 
                           onClick={() => updateItemQty(p._id, 1)}
-                          className="px-2 py-0.5 text-xs text-slate-400 hover:text-white"
+                          className="px-2 py-0.5 text-xs text-slate-400 hover:text-white cursor-pointer"
                         >
                           +
                         </button>
@@ -375,13 +465,13 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
             <div className="mt-4 pt-3 border-t border-slate-850 flex justify-end gap-2">
               <button
                 onClick={() => { setShowOrderModal(false); setSelectedItems({}); }}
-                className="px-4 py-2 bg-slate-850 hover:bg-slate-850/80 text-slate-300 rounded-xl text-xs font-semibold"
+                className="px-4 py-2 bg-slate-850 hover:bg-slate-850/80 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handlePlaceModalOrder}
-                className="px-4 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:brightness-110 text-white rounded-xl text-xs font-bold"
+                className="px-4 py-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:brightness-110 text-white rounded-xl text-xs font-bold cursor-pointer"
               >
                 Confirm Order
               </button>

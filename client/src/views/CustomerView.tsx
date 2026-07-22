@@ -1,15 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Product, Order, OrderItem } from '../types';
-import { productApi, orderApi, getSocket, BASE_URL } from '../services/api';
+import { productApi, orderApi, tableApi, getSocket, BASE_URL } from '../services/api';
 import { 
   Search, ShoppingBag, Clock, Heart, Minus, Plus, 
   Send, Sparkles, AlertTriangle, CheckCircle, ChefHat, 
-  Coffee, HelpCircle, AlertCircle, ShoppingCart 
+  Coffee, HelpCircle, AlertCircle, ShoppingCart, Trash2, ChevronRight, Filter, Check
 } from 'lucide-react';
 
 interface CustomerViewProps {
   user: { username: string; id: string; tableNumber?: number };
   onLogout: () => void;
+  isQrMode?: boolean; // true when arriving via QR scan — locks table number
 }
 
 interface CartItem {
@@ -18,12 +19,23 @@ interface CartItem {
   instructions: string;
 }
 
-export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) => {
+export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQrMode = false }) => {
   const tableNum = user.tableNumber || parseInt(user.id.replace(/\D/g, '')) || 1;
-  const [currentTable, setCurrentTable] = useState(tableNum);
-  
+  const [currentTable, setCurrentTable] = useState<number>(tableNum);
+  const [qrScanConfirmed, setQrScanConfirmed] = useState<boolean>(isQrMode);
+
+  // Auto-dismiss the QR welcome splash after 1.5s — goes straight to menu
+  useEffect(() => {
+    if (isQrMode && qrScanConfirmed) {
+      const timer = setTimeout(() => setQrScanConfirmed(false), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [isQrMode, qrScanConfirmed]);
+
   const [products, setProducts] = useState<Product[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [selectedMainCategory, setSelectedMainCategory] = useState<string>('All');
+  const [selectedSubCategory, setSelectedSubCategory] = useState<string>('All');
+  const [selectedPriceTier, setSelectedPriceTier] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
   
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -34,20 +46,21 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) =>
   const [aiCombos, setAiCombos] = useState<any[]>([]);
   const [aiPrepTime, setAiPrepTime] = useState<number>(15);
 
-  const categories = [
-    'All',
-    'Birthday Cakes',
-    'Wedding Cakes',
-    'Cup Cakes',
-    'Pastries',
-    'Brownies',
-    'Cookies',
-    'Veg Snacks',
-    'Non-Veg Snacks',
-    'Hot Drinks',
-    'Cold Drinks',
-    'Combos'
-  ];
+  // Food Details Modal State
+  const [detailProductModal, setDetailProductModal] = useState<Product | null>(null);
+  const [modalItemQty, setModalItemQty] = useState<number>(1);
+
+  const mainCategories = ['All', 'Juice', 'Snacks', 'Cakes', 'Chats'];
+  
+  const subCategoriesMap: Record<string, string[]> = {
+    'All': [],
+    'Juice': ['All', 'Cold Drinks', 'Hot Drinks', 'Fresh Juice'],
+    'Snacks': ['All', 'Veg Snacks', 'Non-Veg Snacks'],
+    'Cakes': ['All', 'Birthday Cakes', 'Wedding Cakes', 'Cup Cakes', 'Pastries', 'Brownies', 'Cookies'],
+    'Chats': ['All', 'Spicy Chats', 'Sweet Chats']
+  };
+
+  const [customerTablesList, setCustomerTablesList] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
 
   // Fetch products and active order
   useEffect(() => {
@@ -55,20 +68,42 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) =>
     fetchActiveOrder();
     fetchAIRecommendation();
 
+    tableApi.getAll()
+      .then((tbls: any[]) => {
+        if (tbls && tbls.length > 0) {
+          const nums = tbls.map((t: any) => Number(t.tableNumber)).sort((a: number, b: number) => a - b);
+          setCustomerTablesList(nums);
+        }
+      })
+      .catch(err => console.error('Failed to load tables list for CustomerView:', err));
+
     // Sockets setup
     const socket = getSocket();
     socket.emit('join_room', `table_${currentTable}`);
 
-    socket.on('order_status_changed', (updatedOrder: Order) => {
-      if (updatedOrder.tableNumber === currentTable) {
-        setActiveOrder(updatedOrder);
-        playStatusSound(updatedOrder.status);
+    const handleOrderChange = (updatedOrder: any) => {
+      if (!updatedOrder || Number(updatedOrder.tableNumber) === Number(currentTable)) {
+        if (updatedOrder && updatedOrder.status) {
+          setActiveOrder(updatedOrder);
+          playStatusSound(updatedOrder.status);
+        }
+        fetchActiveOrder();
       }
-    });
+    };
+
+    socket.on('order_status_changed', handleOrderChange);
+    socket.on('order_updated', handleOrderChange);
+    socket.on('table_status_updated', fetchActiveOrder);
+
+    // Fast 3-second polling fallback so customer tracker always stays live
+    const intervalId = setInterval(fetchActiveOrder, 3000);
 
     return () => {
+      clearInterval(intervalId);
       socket.emit('leave_room', `table_${currentTable}`);
-      socket.off('order_status_changed');
+      socket.off('order_status_changed', handleOrderChange);
+      socket.off('order_updated', handleOrderChange);
+      socket.off('table_status_updated', fetchActiveOrder);
     };
   }, [currentTable]);
 
@@ -91,78 +126,73 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) =>
         setActiveOrder(null);
       }
     } catch (err) {
-      console.error('Failed to load active orders:', err);
+      console.error('Failed to load active order:', err);
     }
   };
 
   const fetchAIRecommendation = async () => {
     try {
-      const res = await fetch(`${BASE_URL}/api/analytics/ai-forecasts`);
+      const res = await fetch(`${BASE_URL}/ai/recommendations`, {
+        method: 'POST',
+        headers: { 'Content-[#1E1818]': 'application/json' },
+        body: JSON.stringify({
+          timeOfDay: 'afternoon',
+          tableNumber: currentTable
+        })
+      });
       const data = await res.json();
-      if (data) {
-        setAiCombos(data.smartCombos || []);
-        // Determine AI Prep Time based on cart / general
-        setAiPrepTime(data.aiPrepTimes ? data.aiPrepTimes.Cake : 20);
-      }
+      if (data.combos) setAiCombos(data.combos);
+      if (data.estimatedPrepTime) setAiPrepTime(data.estimatedPrepTime);
     } catch (e) {
-      console.error('Failed to load AI combos', e);
+      console.log('AI recommendation fallback:', e);
     }
   };
 
   const playStatusSound = (status: string) => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      
-      if (status === 'cancelled') {
-        oscillator.type = 'sawtooth';
-        oscillator.frequency.setValueAtTime(150, audioCtx.currentTime);
-        gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + 0.4);
-      } else if (status === 'served' || status === 'ready') {
-        oscillator.type = 'triangle';
-        oscillator.frequency.setValueAtTime(600, audioCtx.currentTime);
-        oscillator.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.3);
-        gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + 0.3);
-      } else {
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(400, audioCtx.currentTime);
-        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-        oscillator.start();
-        oscillator.stop(audioCtx.currentTime + 0.15);
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      if (status === 'served') {
+        osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
+        osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.15); // E5
+        osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.3); // G5
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.5);
+      } else if (status === 'ready') {
+        osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.4);
       }
-    } catch (e) {
-      console.log('Audio Context block', e);
-    }
+    } catch (e) {}
   };
 
-  // Add to cart
+  // Cart operations
   const addToCart = (product: Product) => {
     setCart(prev => {
       const existing = prev.find(item => item.product._id === product._id);
       if (existing) {
-        return prev.map(item => 
-          item.product._id === product._id 
-            ? { ...item, quantity: item.quantity + 1 } 
+        return prev.map(item =>
+          item.product._id === product._id
+            ? { ...item, quantity: item.quantity + 1 }
             : item
         );
       }
-      return [...prev, { product, quantity: 1, instructions: '' }];
+      return [...prev, { product, quantity: 1, instructions: specialInstructions[product._id] || '' }];
     });
   };
 
-  const updateQuantity = (productId: string, val: number) => {
+  const updateCartQuantity = (productId: string, delta: number) => {
     setCart(prev => {
       return prev.map(item => {
         if (item.product._id === productId) {
-          const newQty = item.quantity + val;
+          const newQty = item.quantity + delta;
           return newQty > 0 ? { ...item, quantity: newQty } : null;
         }
         return item;
@@ -170,26 +200,23 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) =>
     });
   };
 
-  const updateInstructions = (productId: string, notes: string) => {
-    setSpecialInstructions(prev => ({ ...prev, [productId]: notes }));
-    setCart(prev => 
-      prev.map(item => 
-        item.product._id === productId 
-          ? { ...item, instructions: notes } 
-          : item
+  const updateInstructions = (productId: string, instructions: string) => {
+    setSpecialInstructions(prev => ({ ...prev, [productId]: instructions }));
+    setCart(prev =>
+      prev.map(item =>
+        item.product._id === productId ? { ...item, instructions } : item
       )
     );
   };
 
-  // Calculate cart total
-  const getCartTotal = () => {
+  const calculateTotal = () => {
     return cart.reduce((sum, item) => {
       const price = item.product.isOffer && item.product.discountPrice ? item.product.discountPrice : item.product.price;
       return sum + (price * item.quantity);
     }, 0);
   };
 
-  const placeOrder = async () => {
+  const handlePlaceOrder = async () => {
     if (cart.length === 0) return;
     try {
       const orderItems = cart.map(item => ({
@@ -202,69 +229,125 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) =>
         tableNumber: currentTable,
         customerName: `Table ${currentTable} Guest`,
         items: orderItems,
-        totalAmount: getCartTotal()
+        totalAmount: calculateTotal()
       });
 
       setActiveOrder(newOrder);
       setCart([]);
       setShowCart(false);
-      playStatusSound('pending');
-    } catch (err) {
-      alert('Failed to place order: ' + err);
+      
+      // Fetch AI prep time
+      fetchAIRecommendation();
+    } catch (error: any) {
+      console.error('Failed to place order:', error);
+      alert(error.message || 'Failed to place order. Please try again.');
     }
+  };
+
+  const handleRemoveOrder = async (orderId: string) => {
+    if (!window.confirm('Are you sure you want to cancel and remove this live order?')) {
+      return;
+    }
+    try {
+      await orderApi.remove(orderId);
+      setActiveOrder(null);
+    } catch (err: any) {
+      console.warn('Remove order primary attempt failed, attempting fallback status cancellation:', err);
+      try {
+        await orderApi.update(orderId, { status: 'cancelled', rejectionReason: 'Order cancelled by customer' });
+        setActiveOrder(null);
+      } catch (fallbackErr) {
+        setActiveOrder(null);
+      }
+    }
+  };
+
+  const getCategoryCount = (mainCat: string) => {
+    if (mainCat === 'All') return products.length;
+    return products.filter(p => {
+      const safeCat = p.category || '';
+      const lowerCat = safeCat.toLowerCase();
+      if (mainCat === 'Cakes') return lowerCat.includes('cake') || lowerCat.includes('pastr') || lowerCat.includes('brownie') || lowerCat.includes('cookie');
+      if (mainCat === 'Snacks') return lowerCat.includes('snack') || lowerCat.includes('fries') || lowerCat.includes('burger');
+      if (mainCat === 'Juice') return lowerCat.includes('juice') || lowerCat.includes('drink') || lowerCat.includes('coffee') || lowerCat.includes('tea');
+      if (mainCat === 'Chats') return lowerCat.includes('chat') || lowerCat.includes('puri');
+      return safeCat === mainCat;
+    }).length;
   };
 
   // Filter items
   const filteredProducts = products.filter(p => {
-    const matchesCategory = selectedCategory === 'All' || p.category === selectedCategory;
-    const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          p.category.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
+    const safeName = p.name || '';
+    const safeCat = p.category || '';
+    const lowerCat = safeCat.toLowerCase();
 
-  // Timeline preparation tracker mapping
-  const orderTrackerSteps = [
-    { label: 'Order Received', status: 'pending', percent: 10 },
-    { label: 'Chef Accepted', status: 'accepted', percent: 25 },
-    { label: 'Ingredients Ready', status: 'preparing_prep', percent: 40 },
-    { label: 'Baking & Preparing', status: 'preparing', percent: 60 },
-    { label: 'Decorating', status: 'decorating', percent: 75 },
-    { label: 'Quality Check', status: 'quality_check', percent: 85 },
-    { label: 'Ready', status: 'ready', percent: 95 },
-    { label: 'Served', status: 'served', percent: 100 }
-  ];
+    let pMainCat = 'All';
+    if (
+      ['Birthday Cakes', 'Wedding Cakes', 'Cup Cakes', 'Pastries', 'Brownies', 'Cookies', 'Cakes'].includes(safeCat) ||
+      lowerCat.includes('cake') || lowerCat.includes('pastr') || lowerCat.includes('brownie') || lowerCat.includes('cookie')
+    ) pMainCat = 'Cakes';
+    else if (
+      ['Veg Snacks', 'Non-Veg Snacks', 'Snacks'].includes(safeCat) ||
+      lowerCat.includes('snack') || lowerCat.includes('fries') || lowerCat.includes('burger')
+    ) pMainCat = 'Snacks';
+    else if (
+      ['Hot Drinks', 'Cold Drinks', 'Fresh Juice', 'Juice'].includes(safeCat) ||
+      lowerCat.includes('juice') || lowerCat.includes('drink') || lowerCat.includes('coffee') || lowerCat.includes('tea')
+    ) pMainCat = 'Juice';
+    else if (
+      ['Spicy Chats', 'Sweet Chats', 'Chats'].includes(safeCat) ||
+      lowerCat.includes('chat') || lowerCat.includes('puri')
+    ) pMainCat = 'Chats';
+
+    const matchesMain = selectedMainCategory === 'All' || pMainCat === selectedMainCategory;
+    const matchesSub = selectedSubCategory === 'All' || safeCat === selectedSubCategory;
+    const matchesSearch = safeName.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          safeCat.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const itemPrice = p.isOffer && p.discountPrice ? p.discountPrice : p.price;
+    let matchesPrice = true;
+    if (selectedPriceTier === 'under100') matchesPrice = itemPrice < 100;
+    else if (selectedPriceTier === '100-250') matchesPrice = itemPrice >= 100 && itemPrice <= 250;
+    else if (selectedPriceTier === '250-500') matchesPrice = itemPrice >= 250 && itemPrice <= 500;
+    else if (selectedPriceTier === 'above500') matchesPrice = itemPrice > 500;
+
+    return matchesMain && matchesSub && matchesSearch && matchesPrice;
+  });
 
   const getTrackerProgress = () => {
     if (!activeOrder) return 0;
-    
-    // Check if rejected/cancelled
-    if (activeOrder.status === 'cancelled') return 0;
+    if (activeOrder.status === 'served' || activeOrder.status === 'ready') return 100;
 
-    // Check individual items to refine steps
-    const anyPreparing = activeOrder.items.some(i => i.status === 'preparing');
-    const anyDecorating = activeOrder.items.some(i => i.status === 'decorating');
-    const anyQualityCheck = activeOrder.items.some(i => i.status === 'quality_check');
+    const items = activeOrder.items || [];
+    const totalItems = items.length;
+    if (totalItems === 0) return 20;
 
-    if (activeOrder.status === 'served') return 100;
-    if (activeOrder.status === 'ready') return 95;
-    if (anyQualityCheck) return 85;
-    if (anyDecorating) return 75;
-    if (anyPreparing) return 60;
-    if (activeOrder.status === 'preparing') return 50;
-    if (activeOrder.status === 'accepted') return 25;
+    let readyCount = 0;
+    let prepCount = 0;
+
+    items.forEach((item: any) => {
+      const st = item.status || 'pending';
+      if (st === 'ready' || st === 'delivered' || st === 'served') readyCount++;
+      else if (st === 'preparing' || st === 'decorating' || st === 'quality_check') prepCount++;
+    });
+
+    if (readyCount === totalItems) return 100;
     
-    return 10;
+    // Weight calculation
+    const score = (readyCount * 1.0) + (prepCount * 0.5);
+    const progress = Math.min(95, Math.round(25 + (score / totalItems) * 65));
+    return progress;
   };
 
-  const getActiveStepLabel = () => {
+  const getStepStatusText = () => {
     if (!activeOrder) return '';
-    if (activeOrder.status === 'cancelled') return 'Cancelled';
-    if (activeOrder.status === 'served') return 'Served';
-    if (activeOrder.status === 'ready') return 'Ready to Serve!';
+    if (activeOrder.status === 'served') return 'Food Served at Table! Enjoy!';
+    if (activeOrder.status === 'ready') return 'All Items Ready! Serving now...';
     
-    const anyQuality = activeOrder.items.some(i => i.status === 'quality_check');
-    const anyDecorating = activeOrder.items.some(i => i.status === 'decorating');
-    const anyPreparing = activeOrder.items.some(i => i.status === 'preparing');
+    const items = activeOrder.items || [];
+    const anyPreparing = items.some((i: any) => i.status === 'preparing');
+    const anyDecorating = items.some((i: any) => i.status === 'decorating');
+    const anyQuality = items.some((i: any) => i.status === 'quality_check');
 
     if (anyQuality) return 'Chef Performing Quality Check';
     if (anyDecorating) return 'Cake Decorator Sculpting Drizzle';
@@ -277,358 +360,582 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout }) =>
 
   const currentPercent = getTrackerProgress();
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col pb-20 relative">
-      {/* Header */}
-      <header className="sticky top-0 bg-slate-900/60 backdrop-blur-xl border-b border-slate-800/80 px-6 py-4 flex items-center justify-between z-40">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 text-white shadow-md">
-            <Coffee size={20} />
+  // QR Scan Welcome Screen
+  if (isQrMode && qrScanConfirmed) {
+    return (
+      <div className="min-h-screen bg-[#F7F5F2] flex items-center justify-center p-6 text-[#1E1818]">
+        <div className="text-center space-y-6 max-w-sm w-full">
+          {/* Logo */}
+          <div className="flex justify-center">
+            <div className="w-20 h-20 rounded-3xl bg-[#CD0D0D] flex items-center justify-center shadow-xl shadow-[#CD0D0D]/30 animate-bounce">
+              <Coffee size={36} className="text-white" />
+            </div>
           </div>
+
           <div>
-            <h1 className="font-bold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-rose-400 to-amber-400">
+            <h1 className="text-3xl font-black text-[#CD0D0D]">
               CakeFlow AI
             </h1>
-            <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
-              <span>Table</span>
-              <select 
-                value={currentTable} 
-                onChange={(e) => setCurrentTable(Number(e.target.value))}
-                className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-xs text-rose-400 focus:outline-none"
-              >
-                {[1,2,3,4,5,6].map(num => (
-                  <option key={num} value={num}>T{num}</option>
-                ))}
-              </select>
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-              <span className="text-[10px] text-emerald-400">Live Connection</span>
+            <p className="text-[#6E6262] text-sm mt-1 font-medium">Smart Dining Experience</p>
+          </div>
+
+          {/* Table Badge */}
+          <div className="inline-flex items-center gap-3 px-6 py-4 rounded-2xl bg-white border border-[#D0C0C0] shadow-md">
+            <div className="w-10 h-10 rounded-xl bg-[#CD0D0D]/10 flex items-center justify-center">
+              <span className="text-[#CD0D0D] font-black text-lg">{currentTable}</span>
+            </div>
+            <div className="text-left">
+              <p className="text-xs text-[#6E6262] uppercase tracking-wider font-semibold">Your Table</p>
+              <p className="text-[#1E1818] font-bold">Table {currentTable}</p>
+            </div>
+            <CheckCircle size={20} className="text-emerald-500 ml-2" />
+          </div>
+
+          <p className="text-[#6E6262] text-sm">
+            QR Scan Verified! Loading your menu now...
+          </p>
+
+          <button
+            onClick={() => setQrScanConfirmed(false)}
+            className="w-full py-4 rounded-2xl bg-[#CD0D0D] text-white font-extrabold text-base shadow-lg shadow-[#CD0D0D]/30 hover:bg-[#A60A0A] active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <ShoppingBag size={20} />
+            Tap to Enter Menu Now
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen w-full bg-[#F7F5F2] text-[#1E1818] flex flex-col overflow-hidden">
+
+      {/* ═══════════ TOP HEADER (Responsive for all screens) ═══════════ */}
+      <header className="shrink-0 bg-white border-b border-[#E0D4D4] px-2.5 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between z-40 shadow-sm">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+          <div className="p-1.5 rounded-xl bg-[#CD0D0D] text-white shadow-md shadow-[#CD0D0D]/20 shrink-0">
+            <Coffee size={15} className="sm:w-4 sm:h-4" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="font-black text-xs sm:text-sm tracking-tight text-[#CD0D0D] leading-none truncate">CakeFlow AI</h1>
+            <div className="flex items-center gap-1 mt-0.5">
+              {isQrMode ? (
+                <>
+                  <span className="px-1 py-0.2 rounded bg-[#CD0D0D]/10 text-[#CD0D0D] font-bold border border-[#CD0D0D]/30 text-[8px] sm:text-[9px]">
+                    Table {currentTable}
+                  </span>
+                  <CheckCircle size={9} className="text-emerald-500 shrink-0" />
+                  <span className="text-[8px] sm:text-[9px] text-emerald-600 font-semibold truncate">QR Verified</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-[8px] sm:text-[9px] text-[#6E6262] font-semibold">Table</span>
+                  <select
+                    value={currentTable}
+                    onChange={(e) => setCurrentTable(Number(e.target.value))}
+                    className="bg-[#FAF8F8] border border-[#D0C0C0] rounded px-1 py-0.5 text-[8px] sm:text-[9px] text-[#CD0D0D] font-black focus:outline-none cursor-pointer"
+                  >
+                    {customerTablesList.map(num => (
+                      <option key={num} value={num}>T{num}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping shrink-0"></span>
+              <span className="text-[8px] text-emerald-600 font-bold hidden xs:inline">Live</span>
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={() => setShowCart(true)} 
-            className="p-2.5 rounded-xl bg-slate-800/80 border border-slate-700/50 text-slate-300 hover:text-white transition-colors relative"
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <button
+            onClick={() => setShowCart(true)}
+            className="relative p-1.5 sm:p-2 rounded-xl bg-[#FAF8F8] border border-[#D0C0C0] hover:border-[#CD0D0D] transition-colors cursor-pointer"
           >
-            <ShoppingBag size={18} />
+            <ShoppingBag size={15} className="text-[#CD0D0D] sm:w-4 sm:h-4" />
             {cart.length > 0 && (
-              <span className="absolute -top-1 -right-1 bg-gradient-to-r from-rose-500 to-amber-500 text-white text-[9px] font-bold h-4 w-4 rounded-full flex items-center justify-center animate-bounce">
-                {cart.reduce((sum, i) => sum + i.quantity, 0)}
+              <span className="absolute -top-1 -right-1 bg-[#CD0D0D] text-white text-[8px] font-black h-4 w-4 rounded-full flex items-center justify-center">
+                {cart.reduce((s, i) => s + i.quantity, 0)}
               </span>
             )}
           </button>
-          
-          <button 
+          <button
             onClick={onLogout}
-            className="text-xs text-slate-400 hover:text-rose-400 bg-slate-800/30 px-3 py-1.5 rounded-lg border border-slate-800/80"
+            className="text-[8px] sm:text-[9px] text-[#6E6262] hover:text-[#CD0D0D] bg-[#FAF8F8] px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-xl border border-[#D0C0C0] font-bold cursor-pointer"
           >
-            Exit Table
+            Exit
           </button>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-4xl w-full mx-auto p-4 flex-1 space-y-6">
-        {/* Active Order Live Tracker */}
-        {activeOrder && (
-          <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 p-6 rounded-3xl shadow-xl space-y-5">
-            <div className="flex justify-between items-start">
-              <div>
-                <span className="text-[10px] uppercase font-bold tracking-widest text-rose-400">Live Order Status</span>
-                <h3 className="text-lg font-bold text-slate-100 mt-1">Order #{activeOrder._id.slice(-4)}</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Est. Ready in: ~{aiPrepTime} mins</p>
-              </div>
+      {/* ═══════════ BODY — sidebar + scrollable content ═══════════ */}
+      <div className="flex flex-1 overflow-hidden">
 
-              {activeOrder.status === 'cancelled' ? (
-                <div className="px-3 py-1.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-semibold flex items-center gap-1.5">
-                  <AlertCircle size={14} />
-                  <span>Rejected / Cancelled</span>
-                </div>
-              ) : activeOrder.status === 'served' ? (
-                <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
-                  <CheckCircle size={14} />
-                  <span>Served & Closed</span>
-                </div>
-              ) : (
-                <div className="px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold flex items-center gap-1.5">
-                  <ChefHat size={14} className="animate-spin" />
-                  <span>{getActiveStepLabel()}</span>
-                </div>
-              )}
+        {/* ─── LEFT SIDEBAR (Fluid Responsive Width: 132px phone -> 160px sm -> 185px md) ─── */}
+        <aside className="shrink-0 bg-white border-r border-[#E8DDD0] flex flex-col overflow-y-auto w-[132px] sm:w-[160px] md:w-[185px]">
+
+          {/* Search */}
+          <div className="p-2 sm:p-3 border-b border-[#F0E8DF]">
+            <p className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-[#8A6A27] mb-1">Search</p>
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-[#B09880]" size={11} />
+              <input
+                type="text"
+                placeholder="Search..."
+                className="w-full bg-[#FAF6F2] border border-[#DDD0C0] rounded-xl pl-6 pr-1.5 py-1 text-[10px] sm:text-xs text-[#2A201A] focus:outline-none focus:border-[#CD0D0D] placeholder:text-[#B09880]"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
             </div>
-
-            {/* Rejection Alert */}
-            {activeOrder.status === 'cancelled' && activeOrder.rejectionReason && (
-              <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex gap-2">
-                <AlertTriangle size={18} className="shrink-0" />
-                <div>
-                  <p className="font-bold">Order Rejected by Kitchen Chef</p>
-                  <p className="mt-1 text-slate-300">Reason: <span className="font-semibold text-red-300">{activeOrder.rejectionReason}</span></p>
-                  <p className="mt-0.5 text-slate-400">Please choose an alternative item or speak to a waiter.</p>
-                </div>
-              </div>
-            )}
-
-            {/* Preparation Notes */}
-            {activeOrder.chefNotes && (
-              <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-slate-800 text-xs text-slate-300">
-                <span className="font-semibold text-rose-400 block mb-0.5">Chef's Update:</span>
-                "{activeOrder.chefNotes}"
-              </div>
-            )}
-
-            {/* Progress bar */}
-            {activeOrder.status !== 'cancelled' && (
-              <div className="space-y-3">
-                <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-gradient-to-r from-rose-500 to-amber-400 transition-all duration-1000 ease-out"
-                    style={{ width: `${currentPercent}%` }}
-                  />
-                </div>
-
-                {/* Timeline icons/dots */}
-                <div className="grid grid-cols-4 text-center text-[10px] text-slate-500 font-medium">
-                  <div className={currentPercent >= 10 ? 'text-rose-400 font-bold' : ''}>Received</div>
-                  <div className={currentPercent >= 50 ? 'text-rose-400 font-bold' : ''}>Preparing</div>
-                  <div className={currentPercent >= 95 ? 'text-rose-400 font-bold' : ''}>Ready</div>
-                  <div className={currentPercent >= 100 ? 'text-emerald-400 font-bold' : ''}>Served</div>
-                </div>
-              </div>
-            )}
           </div>
-        )}
 
-        {/* AI Recommendations Header */}
-        {aiCombos.length > 0 && cart.length === 0 && (
-          <div className="bg-gradient-to-r from-rose-950/20 via-slate-900/60 to-amber-950/20 border border-rose-950/40 p-5 rounded-3xl space-y-3">
-            <div className="flex items-center gap-2">
-              <Sparkles size={16} className="text-amber-400 animate-pulse" />
-              <h4 className="text-xs font-bold uppercase tracking-widest text-amber-400">AI Smart Combo Suggestions</h4>
-            </div>
-            
-            <div className="grid md:grid-cols-2 gap-3">
-              {aiCombos.slice(0, 2).map((combo, idx) => (
-                <div key={idx} className="bg-slate-950/40 border border-slate-800 p-3 rounded-2xl flex flex-col justify-between">
-                  <div>
-                    <h5 className="text-xs font-bold text-slate-200">{combo.name}</h5>
-                    <p className="text-[10px] text-slate-400 mt-1">{combo.items.join(' + ')}</p>
-                    <p className="text-[10px] text-slate-500 italic mt-0.5">"{combo.reason}"</p>
+          {/* Categories */}
+          <div className="p-2 sm:p-3 border-b border-[#F0E8DF]">
+            <p className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-[#8A6A27] mb-1.5">Categories</p>
+            <div className="space-y-1">
+              {mainCategories.map(cat => {
+                const isSelected = selectedMainCategory === cat;
+                const count = getCategoryCount(cat);
+                const subs = subCategoriesMap[cat] || [];
+                return (
+                  <div key={cat}>
+                    <button
+                      onClick={() => {
+                        setSelectedMainCategory(cat);
+                        setSelectedSubCategory('All');
+                      }}
+                      className={`w-full flex items-center justify-between py-1.5 sm:py-2 px-1.5 sm:px-2.5 rounded-lg sm:rounded-xl transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-[#CD0D0D] text-white shadow-sm font-bold'
+                          : 'hover:bg-[#FFF0F0] text-[#3A2820]'
+                      }`}
+                    >
+                      <span className={`text-[11px] sm:text-xs font-bold truncate ${isSelected ? 'text-white' : ''}`}>
+                        {cat === 'All' ? 'All Items' : cat}
+                      </span>
+                      <span className={`text-[9px] sm:text-[10px] font-mono ml-1 shrink-0 ${isSelected ? 'text-white/80' : 'text-[#A09080]'}`}>
+                        {count}
+                      </span>
+                    </button>
+
+                    {/* Smooth accordion sub-categories */}
+                    {isSelected && subs.length > 0 && (
+                      <div className="animate-accordion-down mt-1 ml-1 pl-1.5 sm:pl-2 border-l-2 border-[#CD0D0D]/30 space-y-1">
+                        {subs.map(sub => {
+                          const isSubSel = selectedSubCategory === sub;
+                          return (
+                            <button
+                              key={sub}
+                              onClick={() => setSelectedSubCategory(sub)}
+                              className={`w-full text-left py-1 px-1.5 rounded-md text-[9px] sm:text-[10px] font-bold transition-all cursor-pointer truncate ${
+                                isSubSel ? 'bg-[#7A5A20] text-white' : 'text-[#6A4A30] hover:bg-[#FAF0E8]'
+                              }`}
+                            >
+                              {sub === 'All' ? `All ${cat}` : sub}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex justify-between items-center mt-3 pt-2 border-t border-slate-900">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-bold text-rose-400">₹{combo.comboPrice}</span>
-                      <span className="text-[9px] text-slate-500 line-through">₹{combo.originalPrice}</span>
-                    </div>
-                    <span className="text-[9px] font-bold bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded">Save ₹{combo.discount}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
-        )}
 
-        {/* Search and Filters */}
-        <div className="flex flex-col md:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
-            <input 
-              type="text" 
-              placeholder="Search cakes, snacks, hot drinks..."
-              className="w-full bg-slate-900/60 border border-slate-800/80 focus:border-rose-500 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none transition-colors text-slate-200"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
+          {/* Price Tiers */}
+          <div className="p-2 sm:p-3 border-b border-[#F0E8DF]">
+            <p className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-[#8A6A27] mb-1.5">Price</p>
+            <div className="space-y-0.5 sm:space-y-1">
+              {[
+                { id: 'All', label: 'All Prices' },
+                { id: 'under100', label: '< ₹100' },
+                { id: '100-250', label: '₹100 - 250' },
+                { id: '250-500', label: '₹250 - 500' },
+                { id: 'above500', label: '₹500+' },
+              ].map(tier => {
+                const isSel = selectedPriceTier === tier.id;
+                return (
+                  <button
+                    key={tier.id}
+                    onClick={() => setSelectedPriceTier(tier.id)}
+                    className={`w-full text-left py-1 sm:py-1.5 px-1.5 sm:px-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-semibold transition-all cursor-pointer truncate ${
+                      isSel
+                        ? 'bg-[#F5EAD8] text-[#7A5A20] border border-[#C8A060] font-bold'
+                        : 'text-[#4A3828] hover:bg-[#FAF6F0]'
+                    }`}
+                  >
+                    {tier.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          
-          {/* Categories Bar */}
-          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-slate-800">
-            {categories.map(cat => (
+
+          {/* Reset Filters */}
+          {(selectedMainCategory !== 'All' || selectedSubCategory !== 'All' || selectedPriceTier !== 'All' || searchQuery !== '') && (
+            <div className="p-2 sm:p-3">
               <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap border transition-all ${
-                  selectedCategory === cat 
-                    ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white border-transparent' 
-                    : 'bg-slate-900/40 text-slate-400 border-slate-850 hover:bg-slate-900/80 hover:text-slate-200'
-                }`}
+                onClick={() => {
+                  setSelectedMainCategory('All');
+                  setSelectedSubCategory('All');
+                  setSelectedPriceTier('All');
+                  setSearchQuery('');
+                }}
+                className="w-full py-1.5 text-[10px] sm:text-xs font-bold text-[#CD0D0D] border border-[#CD0D0D]/30 rounded-lg sm:rounded-xl hover:bg-[#FFF0F0] cursor-pointer transition-colors"
               >
-                {cat}
+                ✕ Reset
               </button>
-            ))}
-          </div>
-        </div>
+            </div>
+          )}
+        </aside>
 
-        {/* Products Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {filteredProducts.map(product => {
-            const isOffer = product.isOffer && product.discountPrice;
-            const priceToDisplay = isOffer ? product.discountPrice : product.price;
+        {/* ─── RIGHT SCROLLABLE CONTENT ─── */}
+        <div className="flex-1 overflow-y-auto bg-[#F7F5F2] min-w-0">
 
-            return (
-              <div 
-                key={product._id} 
-                className="bg-slate-900/40 backdrop-blur-md border border-slate-800/80 rounded-2xl overflow-hidden hover:border-slate-700/80 transition-all flex flex-col group"
-              >
-                {/* Image */}
-                <div className="h-36 overflow-hidden relative bg-slate-950">
-                  <img 
-                    src={product.image} 
-                    alt={product.name} 
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                  />
-                  
-                  {/* Badges */}
-                  <div className="absolute top-2 left-2 flex flex-col gap-1">
-                    {product.isBestseller && (
-                      <span className="text-[8px] font-bold uppercase tracking-wider bg-rose-500 text-white px-2 py-0.5 rounded-full shadow">Bestseller</span>
-                    )}
-                    {product.isTrending && (
-                      <span className="text-[8px] font-bold uppercase tracking-wider bg-purple-600 text-white px-2 py-0.5 rounded-full shadow">Trending</span>
-                    )}
-                    {product.isChefRecommended && (
-                      <span className="text-[8px] font-bold uppercase tracking-wider bg-amber-500 text-white px-2 py-0.5 rounded-full shadow">Chef Choice</span>
-                    )}
+          {/* LIVE ORDER TRACKER */}
+          {activeOrder && activeOrder.status !== 'cancelled' && (
+            <div className="mx-2 sm:mx-3.5 mt-2.5 sm:mt-3.5 bg-white border border-[#CD0D0D]/30 rounded-2xl p-2.5 sm:p-3.5 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                  <div className="p-1 sm:p-1.5 rounded-lg bg-[#CD0D0D]/10 text-[#CD0D0D] shrink-0">
+                    <ChefHat size={14} />
                   </div>
-
-                  {!product.inStock && (
-                    <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-[2px] flex items-center justify-center">
-                      <span className="text-xs font-bold text-red-400 uppercase tracking-widest border border-red-500/30 px-3 py-1 rounded">Sold Out</span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1">
+                      <span className="font-black text-[11px] sm:text-xs text-[#1E1818] truncate">Order #{activeOrder._id.slice(-4)}</span>
+                      <span className="text-[7px] uppercase font-black bg-[#CD0D0D] text-white px-1.5 py-0.2 rounded-full shrink-0">
+                        {activeOrder.status}
+                      </span>
                     </div>
+                    <p className="text-[9px] text-[#CD0D0D] font-bold truncate">{getStepStatusText()}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="font-black text-xs sm:text-base text-[#CD0D0D] font-mono">₹{activeOrder.totalAmount}</span>
+                  {activeOrder.status === 'pending' && (
+                    <button onClick={() => handleRemoveOrder(activeOrder._id)} className="p-1 sm:p-1.5 bg-[#FFF0F0] rounded-lg cursor-pointer text-[#CD0D0D] hover:bg-[#CD0D0D] hover:text-white transition-all">
+                      <Trash2 size={11} />
+                    </button>
                   )}
                 </div>
-
-                {/* Info */}
-                <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
-                  <div>
-                    <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider">{product.category}</span>
-                    <h4 className="font-bold text-slate-200 text-sm mt-0.5 line-clamp-1 group-hover:text-rose-400 transition-colors">{product.name}</h4>
-                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-1">
-                      <Clock size={12} className="text-rose-500/70" />
-                      <span>~{product.estimatedPrepTime} mins</span>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-between items-center pt-2 border-t border-slate-900/60">
-                    <div>
-                      {isOffer ? (
-                        <div className="flex items-center gap-1">
-                          <span className="text-sm font-extrabold text-rose-400">₹{product.discountPrice}</span>
-                          <span className="text-[9px] text-slate-500 line-through">₹{product.price}</span>
-                        </div>
-                      ) : (
-                        <span className="text-sm font-extrabold text-slate-200">₹{product.price}</span>
-                      )}
-                    </div>
-
-                    <button
-                      disabled={!product.inStock}
-                      onClick={() => addToCart(product)}
-                      className="p-2 rounded-xl bg-slate-800 hover:bg-gradient-to-r hover:from-rose-500 hover:to-amber-500 text-slate-300 hover:text-white transition-all disabled:opacity-40"
-                    >
-                      <Plus size={16} />
-                    </button>
-                  </div>
+              </div>
+              {/* Progress */}
+              <div className="mb-2">
+                <div className="flex justify-between text-[8px] font-bold text-[#9E8080] mb-1">
+                  <span>Progress</span><span className="text-[#CD0D0D]">{currentPercent}%</span>
+                </div>
+                <div className="w-full bg-[#F4EAEA] rounded-full h-1.5 sm:h-2 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-[#CD0D0D] to-[#FF5555] rounded-full transition-all duration-700" style={{ width: `${currentPercent}%` }} />
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </main>
-
-      {/* Cart Slider Overlay */}
-      {showCart && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 flex justify-end">
-          <div className="w-full max-w-md bg-slate-900 border-l border-slate-850 h-full flex flex-col justify-between">
-            {/* Cart Header */}
-            <div className="p-6 border-b border-slate-800 flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <ShoppingCart size={20} className="text-rose-400" />
-                <h3 className="font-bold text-lg text-slate-200">Your Basket</h3>
+              {/* Item status pills */}
+              <div className="flex flex-wrap gap-1">
+                {activeOrder.items?.map((item: any, idx: number) => {
+                  const nm = item.product?.name || item.name || 'Item';
+                  const st = item.status || 'pending';
+                  const ready = st === 'ready' || st === 'delivered';
+                  return (
+                    <span key={idx} className={`text-[7px] sm:text-[8px] font-bold px-1.5 py-0.5 rounded-full ${ready ? 'bg-emerald-100 text-emerald-700' : 'bg-[#FFF0F0] text-[#CD0D0D]'}`}>
+                      {item.quantity}x {nm.length > 10 ? nm.slice(0, 10) + '…' : nm}
+                    </span>
+                  );
+                })}
               </div>
-              <button 
-                onClick={() => setShowCart(false)}
-                className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-800"
-              >
-                Close
-              </button>
+            </div>
+          )}
+
+          {/* MENU GRID (Fluid Responsive Cards for all Phone & Tablet sizes) */}
+          <div className="p-2 sm:p-3.5">
+            <div className="flex items-center justify-between mb-2.5 sm:mb-3">
+              <h2 className="font-black text-xs sm:text-sm text-[#1E1818] uppercase tracking-wider">
+                Menu · {filteredProducts.length} items
+              </h2>
+              <span className="text-[10px] sm:text-xs text-[#9E8888] font-medium">Fresh & Delicious</span>
             </div>
 
-            {/* Cart Body */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {cart.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-3">
-                  <ShoppingBag size={48} className="text-slate-700 animate-bounce" />
-                  <p className="text-sm">Your cart is empty.</p>
-                  <p className="text-xs max-w-xs">Scan the digital menu, choose your favorite items, and add them here to start!</p>
-                </div>
-              ) : (
-                cart.map(item => {
-                  const price = item.product.isOffer && item.product.discountPrice ? item.product.discountPrice : item.product.price;
+            {filteredProducts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-[#9E8888]">
+                <Coffee size={36} className="text-[#CD0D0D]/30 mb-3" />
+                <p className="text-xs sm:text-sm font-bold">No items match your filters.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3.5">
+                {filteredProducts.map(p => {
+                  const inCart = cart.find(c => c.product._id === p._id);
+                  const qty = inCart ? inCart.quantity : 0;
+                  const price = p.isOffer && p.discountPrice ? p.discountPrice : p.price;
                   return (
-                    <div key={item.product._id} className="bg-slate-950/40 border border-slate-800 p-4 rounded-2xl space-y-3">
-                      <div className="flex justify-between items-start gap-3">
-                        <div className="flex gap-3">
-                          <img src={item.product.image} className="w-12 h-12 object-cover rounded-lg bg-slate-800" />
-                          <div>
-                            <h4 className="text-xs font-bold text-slate-200 line-clamp-1">{item.product.name}</h4>
-                            <p className="text-[10px] text-rose-400 font-semibold mt-0.5">₹{price} each</p>
-                          </div>
+                    <div
+                      key={p._id}
+                      onClick={() => { setDetailProductModal(p); setModalItemQty(1); }}
+                      className="bg-white rounded-xl sm:rounded-2xl overflow-hidden border border-[#E8E0D8] hover:border-[#CD0D0D] shadow-xs hover:shadow-md transition-all cursor-pointer group flex flex-col justify-between min-w-0"
+                    >
+                      {/* Product Image */}
+                      <div>
+                        <div className="relative w-full h-28 xs:h-32 sm:h-36 bg-[#FAF6F2] overflow-hidden">
+                          <img
+                            src={p.image}
+                            alt={p.name}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = 'https://via.placeholder.com/300x200?text=No+Image';
+                            }}
+                          />
+                          {/* Category badge */}
+                          <span className="absolute top-1.5 left-1.5 bg-[#CD0D0D] text-white text-[7px] sm:text-[8px] font-black px-1.5 sm:px-2 py-0.5 rounded-full uppercase shadow-xs truncate max-w-[80%]">
+                            {p.category}
+                          </span>
+                          {/* Cart qty badge */}
+                          {qty > 0 && (
+                            <span className="absolute top-1.5 right-1.5 bg-emerald-500 text-white text-[8px] sm:text-[9px] font-black h-5 w-5 rounded-full flex items-center justify-center shadow-md">
+                              {qty}
+                            </span>
+                          )}
+                          {/* Offer badge */}
+                          {p.isOffer && (
+                            <span className="absolute bottom-1.5 right-1.5 bg-amber-400 text-white text-[7px] sm:text-[8px] font-black px-1.5 py-0.5 rounded-full shadow-xs">
+                              SALE
+                            </span>
+                          )}
                         </div>
-                        <div className="flex items-center gap-2.5 bg-slate-900 border border-slate-800 rounded-lg p-1.5">
-                          <button 
-                            onClick={() => updateQuantity(item.product._id, -1)}
-                            className="p-1 text-slate-400 hover:text-white"
-                          >
-                            <Minus size={12} />
-                          </button>
-                          <span className="text-xs font-bold text-slate-350">{item.quantity}</span>
-                          <button 
-                            onClick={() => updateQuantity(item.product._id, 1)}
-                            className="p-1 text-slate-400 hover:text-white"
-                          >
-                            <Plus size={12} />
-                          </button>
+
+                        {/* Card Info */}
+                        <div className="p-2 sm:p-3">
+                          <h3 className="font-bold text-[11px] sm:text-xs md:text-sm text-[#1E1818] line-clamp-1 group-hover:text-[#CD0D0D] transition-colors leading-tight">
+                            {p.name}
+                          </h3>
+                          <div className="flex items-center gap-1 text-[9px] sm:text-[10px] text-[#9E8888] mt-1 mb-1.5 font-medium">
+                            <Clock size={9} className="text-[#CD0D0D] shrink-0" />
+                            <span className="truncate">~{p.estimatedPrepTime || 15}m prep</span>
+                          </div>
                         </div>
                       </div>
 
-                      {/* Instructions */}
-                      <div>
-                        <input 
-                          type="text" 
-                          placeholder="Add special instructions (e.g. Less sugar, Eggless, Extra cheese...)" 
-                          className="w-full bg-slate-900/60 border border-slate-850 rounded-xl px-3 py-2 text-[10px] focus:outline-none focus:border-rose-500/50 text-slate-300"
-                          value={specialInstructions[item.product._id] || ''}
-                          onChange={(e) => updateInstructions(item.product._id, e.target.value)}
-                        />
+                      {/* Card Bottom Controls */}
+                      <div className="px-2 sm:px-3 pb-2 sm:pb-3 pt-0 flex items-center justify-between border-t border-[#F5EFEA]/80 mt-0.5">
+                        <div className="min-w-0 pr-1">
+                          <span className="font-black text-xs sm:text-sm md:text-base text-[#CD0D0D] font-mono">₹{price}</span>
+                          {p.isOffer && p.discountPrice && (
+                            <span className="text-[9px] text-[#9E8888] line-through ml-1 font-mono hidden xs:inline">₹{p.price}</span>
+                          )}
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addToCart(p);
+                          }}
+                          className={`flex items-center gap-0.5 sm:gap-1 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-black transition-all cursor-pointer active:scale-95 shadow-xs shrink-0 ${
+                            qty > 0
+                              ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                              : 'bg-[#CD0D0D] hover:bg-[#A60A0A] text-white'
+                          }`}
+                        >
+                          <Plus size={10} className="sm:w-3 sm:h-3" />
+                          <span>{qty > 0 ? `(${qty})` : 'Add'}</span>
+                        </button>
                       </div>
                     </div>
                   );
-                })
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom padding so floating cart doesn't cover last card */}
+          <div style={{ height: '85px' }} />
+        </div>
+      </div>
+
+      {/* ═══════════ FLOATING CART PILL (Fluid Responsive Position) ═══════════ */}
+      {cart.length > 0 && !showCart && (
+        <div className="fixed bottom-3 sm:bottom-4 z-40 left-[140px] sm:left-[172px] md:left-[198px] right-3 sm:right-4">
+          <button
+            onClick={() => setShowCart(true)}
+            className="w-full bg-[#CD0D0D] hover:bg-[#A60A0A] text-white py-2.5 sm:py-3.5 px-3 sm:px-4 rounded-xl sm:rounded-2xl flex items-center justify-between shadow-2xl shadow-[#CD0D0D]/40 active:scale-[0.98] transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-lg bg-white/25 flex items-center justify-center font-black text-[10px] sm:text-xs font-mono shrink-0">
+                {cart.reduce((s, i) => s + i.quantity, 0)}
+              </div>
+              <span className="text-[11px] sm:text-xs font-extrabold truncate">View Cart · T{currentTable}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="font-black text-xs sm:text-sm font-mono">₹{calculateTotal().toFixed(0)}</span>
+              <ChevronRight size={15} />
+            </div>
+          </button>
+        </div>
+      )}
+
+
+      {/* ═══════════ CART DRAWER ═══════════ */}
+      {showCart && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end" onClick={() => setShowCart(false)}>
+          <div className="bg-white w-full max-w-sm h-full flex flex-col shadow-2xl animate-slide-in" onClick={e => e.stopPropagation()}>
+            {/* Cart Header */}
+            <div className="px-5 py-4 border-b border-[#E8E0E0] flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <ShoppingBag size={18} className="text-[#CD0D0D]" />
+                <h3 className="font-black text-base text-[#1E1818]">Your Cart</h3>
+                <span className="bg-[#CD0D0D] text-white text-[9px] font-black px-2 py-0.5 rounded-full">
+                  T{currentTable}
+                </span>
+              </div>
+              <button onClick={() => setShowCart(false)} className="p-1.5 rounded-xl hover:bg-[#FAF0F0] text-[#9E8888] cursor-pointer transition-colors">
+                ✕
+              </button>
+            </div>
+
+            {/* Cart Items */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {cart.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-[#9E8888]">
+                  <ShoppingCart size={40} className="text-[#CD0D0D]/20 mb-3" />
+                  <p className="text-sm font-bold">Cart is empty</p>
+                </div>
+              ) : (
+                cart.map(item => (
+                  <div key={item.product._id} className="bg-[#FAF8F8] border border-[#E8E0E0] rounded-2xl p-3">
+                    <div className="flex gap-3 items-start">
+                      <div className="w-14 h-14 rounded-xl overflow-hidden bg-white border border-[#E0D8D8] shrink-0">
+                        <img src={item.product.image} alt={item.product.name} className="w-full h-full object-cover" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-xs text-[#1E1818] truncate">{item.product.name}</p>
+                        <p className="font-black text-sm text-[#CD0D0D] font-mono mt-0.5">
+                          ₹{((item.product.isOffer && item.product.discountPrice ? item.product.discountPrice : item.product.price) * item.quantity).toFixed(0)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 bg-white border border-[#E0D8D8] rounded-xl p-1 shrink-0">
+                        <button onClick={() => updateCartQuantity(item.product._id, -1)} className="w-6 h-6 rounded-lg bg-[#FAF0F0] text-[#CD0D0D] font-bold text-sm flex items-center justify-center hover:bg-[#CD0D0D] hover:text-white transition-colors cursor-pointer">-</button>
+                        <span className="font-mono font-black text-xs w-4 text-center">{item.quantity}</span>
+                        <button onClick={() => updateCartQuantity(item.product._id, 1)} className="w-6 h-6 rounded-lg bg-[#FAF0F0] text-[#CD0D0D] font-bold text-sm flex items-center justify-center hover:bg-[#CD0D0D] hover:text-white transition-colors cursor-pointer">+</button>
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-[#EEE8E8]">
+                      <input
+                        type="text"
+                        placeholder="Special note (e.g. less sugar)..."
+                        className="w-full bg-white border border-[#DDD8D8] focus:border-[#CD0D0D] rounded-xl px-3 py-1.5 text-[10px] placeholder:text-[#9E8888] focus:outline-none"
+                        value={item.instructions || specialInstructions[item.product._id] || ''}
+                        onChange={(e) => updateInstructions(item.product._id, e.target.value)}
+                      />
+                    </div>
+                  </div>
+                ))
               )}
             </div>
 
-            {/* Cart Footer */}
+            {/* Checkout */}
             {cart.length > 0 && (
-              <div className="p-6 border-t border-slate-800 bg-slate-900/80 space-y-4">
-                <div className="flex justify-between items-center text-sm font-semibold">
-                  <span className="text-slate-400">Total Price</span>
-                  <span className="text-lg font-bold text-rose-400">₹{getCartTotal()}</span>
+              <div className="p-4 border-t border-[#E8E0E0] shrink-0 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold text-[#6E6262]">Total</span>
+                  <span className="text-2xl font-black text-[#CD0D0D] font-mono">₹{calculateTotal().toFixed(0)}</span>
                 </div>
-
                 <button
-                  onClick={placeOrder}
-                  className="w-full py-3.5 bg-gradient-to-r from-rose-500 to-amber-500 hover:brightness-110 active:scale-[0.98] text-white font-bold rounded-xl text-sm transition-all flex justify-center items-center gap-2 shadow-lg shadow-rose-500/25"
+                  onClick={handlePlaceOrder}
+                  className="w-full py-4 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-black rounded-2xl text-sm flex items-center justify-center gap-2 shadow-xl shadow-[#CD0D0D]/30 cursor-pointer transition-all active:scale-[0.98]"
                 >
-                  <Send size={15} />
-                  <span>Send to Chef Kitchen</span>
+                  <Send size={16} />
+                  Place Order
                 </button>
               </div>
             )}
           </div>
         </div>
       )}
+
+      {/* ═══════════ PRODUCT DETAIL MODAL (Centered on Phone) ═══════════ */}
+      {detailProductModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setDetailProductModal(null)}>
+          <div className="bg-white w-full max-w-[92vw] sm:max-w-md rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[88vh] animate-scale-in text-[#1E1818]" onClick={e => e.stopPropagation()}>
+            {/* Image Banner - Centered & Featured */}
+            <div className="relative w-full shrink-0 h-48 sm:h-56 bg-[#FAF6F2] overflow-hidden">
+              <img
+                src={detailProductModal.image}
+                alt={detailProductModal.name}
+                className="w-full h-full object-cover"
+                onError={(e) => { (e.target as HTMLImageElement).src = 'https://via.placeholder.com/400x250?text=No+Image'; }}
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
+              <button
+                onClick={() => setDetailProductModal(null)}
+                className="absolute top-3 right-3 bg-white/90 hover:bg-white p-2 rounded-full shadow-md cursor-pointer transition-colors text-[#1E1818]"
+              >
+                ✕
+              </button>
+              <div className="absolute bottom-3 left-3 flex items-center gap-2">
+                <span className="bg-[#CD0D0D] text-white text-[9px] font-black px-2.5 py-1 rounded-full uppercase shadow">
+                  {detailProductModal.category}
+                </span>
+                {detailProductModal.isOffer && (
+                  <span className="bg-amber-400 text-white text-[9px] font-black px-2 py-1 rounded-full uppercase shadow">
+                    Sale
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Info */}
+            <div className="p-4 sm:p-5 flex-1 overflow-y-auto">
+              <div className="flex justify-between items-start gap-2">
+                <div className="flex-1">
+                  <h2 className="text-lg sm:text-xl font-black text-[#1E1818] leading-snug">{detailProductModal.name}</h2>
+                  <div className="flex items-center gap-1.5 text-[#9E8888] text-xs mt-1.5 font-medium">
+                    <Clock size={13} className="text-[#CD0D0D]" />
+                    <span>~{detailProductModal.estimatedPrepTime || 15} min prep time</span>
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-xl sm:text-2xl font-black text-[#CD0D0D] font-mono">
+                    ₹{detailProductModal.isOffer && detailProductModal.discountPrice ? detailProductModal.discountPrice : detailProductModal.price}
+                  </p>
+                  {detailProductModal.isOffer && detailProductModal.discountPrice && (
+                    <p className="text-xs text-[#9E8888] line-through font-mono">₹{detailProductModal.price}</p>
+                  )}
+                </div>
+              </div>
+              {detailProductModal.description && (
+                <p className="text-xs text-[#6E6262] mt-3 leading-relaxed border-t border-[#F5EFEA] pt-3">{detailProductModal.description}</p>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-[#EEE8E8] bg-[#FAF8F8] flex items-center gap-3 shrink-0">
+              <div className="flex items-center gap-2 bg-white border border-[#E0D8D8] p-1.5 rounded-2xl">
+                <button
+                  onClick={() => setModalItemQty(prev => Math.max(1, prev - 1))}
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#FAF0F0] text-[#CD0D0D] font-bold flex items-center justify-center hover:bg-[#CD0D0D] hover:text-white transition-colors cursor-pointer"
+                >
+                  <Minus size={14} />
+                </button>
+                <span className="font-mono font-black text-base w-6 text-center">{modalItemQty}</span>
+                <button
+                  onClick={() => setModalItemQty(prev => prev + 1)}
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#FAF0F0] text-[#CD0D0D] font-bold flex items-center justify-center hover:bg-[#CD0D0D] hover:text-white transition-colors cursor-pointer"
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+              <button
+                disabled={!detailProductModal.inStock}
+                onClick={() => {
+                  for (let i = 0; i < modalItemQty; i++) addToCart(detailProductModal);
+                  setDetailProductModal(null);
+                  setShowCart(true);
+                }}
+                className="flex-1 py-3.5 bg-[#CD0D0D] hover:bg-[#A60A0A] disabled:opacity-50 text-white font-black rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#CD0D0D]/25 cursor-pointer transition-all active:scale-[0.98]"
+              >
+                <ShoppingBag size={16} />
+                Add {modalItemQty} · ₹{((detailProductModal.isOffer && detailProductModal.discountPrice ? detailProductModal.discountPrice : detailProductModal.price) * modalItemQty).toFixed(0)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

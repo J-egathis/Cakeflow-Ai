@@ -12,11 +12,12 @@ interface ChefViewProps {
 }
 
 export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
-  const [activeKitchen, setActiveKitchen] = useState<'cake_chef' | 'snacks_chef'>(user.role || 'cake_chef');
+  const [activeTab, setActiveTab] = useState<string>('All');
+  const tabs = ['All', 'Juice', 'Snacks', 'Cakes', 'Chats'];
   
-  const isCakeKitchen = activeKitchen === 'cake_chef';
-  const categoryFilter = isCakeKitchen ? 'Cake' : 'Snack';
-  
+  // Mobile Column Selector (all | pending | accepted | ready)
+  const [mobileColFilter, setMobileColFilter] = useState<string>('all');
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
   
@@ -28,28 +29,17 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
   const [chefNotes, setChefNotes] = useState<{ [orderId: string]: string }>({});
   const [estTime, setEstTime] = useState<{ [orderId: string]: number }>({});
 
-  const columns = isCakeKitchen ? [
+  const columns = [
     { id: 'pending', name: 'Pending' },
     { id: 'accepted', name: 'Accepted' },
-    { id: 'preparing', name: 'Preparing' },
-    { id: 'decorating', name: 'Decorating' },
-    { id: 'quality_check', name: 'Quality Check' },
     { id: 'ready', name: 'Ready' }
-  ] : [
-    { id: 'pending', name: 'Pending' },
-    { id: 'accepted', name: 'Accepted' },
-    { id: 'preparing', name: 'Preparing' },
-    { id: 'quality_check', name: 'Quality Check' },
-    { id: 'ready', name: 'Ready' },
-    { id: 'summary', name: 'Kitchen Summary' }
   ];
 
-  // Fetch orders matching this chef's category
+  // Fetch orders
   const fetchChefOrders = async () => {
     setLoading(true);
     try {
-      const data = await orderApi.getAll({ category: categoryFilter });
-      // Filter out delivered or cancelled orders to keep dashboard clean
+      const data = await orderApi.getAll();
       const activeOrders = data.filter((order: Order) => 
         order.status !== 'served' && order.status !== 'cancelled'
       );
@@ -64,28 +54,33 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
   useEffect(() => {
     fetchChefOrders();
 
-    // Sockets setup
     const socket = getSocket();
-    const roomName = isCakeKitchen ? 'cake_kitchen' : 'snacks_kitchen';
-    socket.emit('join_room', roomName);
+    socket.emit('join_room', 'cake_kitchen');
+    socket.emit('join_room', 'snacks_kitchen');
 
-    // Listen for new orders
-    socket.on('new_kitchen_items', () => {
+    const handleNewOrder = () => {
       fetchChefOrders();
       playKitchenNotificationSound();
-    });
+    };
 
-    // Listen for general order updates
-    socket.on('order_updated', () => {
-      fetchChefOrders();
-    });
+    socket.on('new_order', handleNewOrder);
+    socket.on('new_kitchen_items', handleNewOrder);
+    socket.on('order_updated', fetchChefOrders);
+    socket.on('table_status_updated', fetchChefOrders);
+
+    // Fast 3-second polling fallback so kitchen never misses orders
+    const intervalId = setInterval(fetchChefOrders, 3000);
 
     return () => {
-      socket.emit('leave_room', roomName);
-      socket.off('new_kitchen_items');
-      socket.off('order_updated');
+      clearInterval(intervalId);
+      socket.emit('leave_room', 'cake_kitchen');
+      socket.emit('leave_room', 'snacks_kitchen');
+      socket.off('new_order', handleNewOrder);
+      socket.off('new_kitchen_items', handleNewOrder);
+      socket.off('order_updated', fetchChefOrders);
+      socket.off('table_status_updated', fetchChefOrders);
     };
-  }, [activeKitchen]);
+  }, []);
 
   const playKitchenNotificationSound = () => {
     try {
@@ -97,18 +92,17 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       gain.connect(audioCtx.destination);
       
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime);
       gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
       osc.start();
       
-      osc.frequency.setValueAtTime(440, audioCtx.currentTime + 0.2); // A4
+      osc.frequency.setValueAtTime(440, audioCtx.currentTime + 0.2);
       osc.stop(audioCtx.currentTime + 0.5);
     } catch (e) {
       console.log('Audio Context block', e);
     }
   };
 
-  // Move order step
   const updateStatus = async (orderId: string, nextStatus: string, extras = {}) => {
     try {
       const notes = chefNotes[orderId] || '';
@@ -121,7 +115,7 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       if (!order) return;
 
       const itemsToUpdate = order.items
-        .filter(item => item.category === categoryFilter)
+        .filter(item => itemMatchesTab(item, activeTab))
         .map(item => ({
           itemId: item._id,
           status: nextStatus
@@ -161,10 +155,22 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
     }
   };
 
+  const itemMatchesTab = (item: any, tab: string) => {
+    if (tab === 'All') return true;
+    const cat = (item.product?.category || item.category || '').toLowerCase();
+    const prodName = (item.product?.name || item.name || '').toLowerCase();
+    
+    if (tab === 'Cakes') return cat.includes('cake') || cat.includes('pastr') || cat.includes('brownie') || cat.includes('cookie') || cat.includes('dessert') || prodName.includes('cake');
+    if (tab === 'Snacks') return cat.includes('snack') || cat.includes('veg') || cat.includes('burger') || cat.includes('puff') || prodName.includes('snack');
+    if (tab === 'Juice') return cat.includes('drink') || cat.includes('juice') || cat.includes('cold') || cat.includes('hot') || cat.includes('latte') || cat.includes('mojito');
+    if (tab === 'Chats') return cat.includes('chat') || cat.includes('chaat');
+    
+    return true;
+  };
+
   const getOrdersInColumn = (colId: string) => {
-    if (colId === 'summary') return [];
     return orders.filter(order => {
-      const domainItems = order.items.filter(item => item.category === categoryFilter);
+      const domainItems = order.items.filter(item => itemMatchesTab(item, activeTab));
       if (domainItems.length === 0) return false;
       
       if (colId === 'pending') {
@@ -177,194 +183,197 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
   const getNextColumnId = (current: string) => {
     const idx = columns.findIndex(c => c.id === current);
-    if (idx !== -1 && idx < columns.length - 1 && columns[idx + 1].id !== 'summary') {
+    if (idx !== -1 && idx < columns.length - 1) {
       return columns[idx + 1].id;
     }
     return '';
   };
 
-  return (
-    <div className="h-screen max-h-screen bg-slate-950 text-slate-100 flex flex-col relative overflow-hidden">
-      {/* Background gradients */}
-      <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-rose-500/5 blur-[120px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-amber-500/5 blur-[120px] pointer-events-none" />
+  const visibleColumns = mobileColFilter === 'all' 
+    ? columns 
+    : columns.filter(c => c.id === mobileColFilter);
 
+  return (
+    <div className="min-h-screen md:h-screen md:max-h-screen bg-[#F7F5F2] text-[#1E1818] flex flex-col relative overflow-x-hidden">
       {/* Header */}
-      <header className="bg-slate-900/60 backdrop-blur-xl border-b border-slate-800/80 px-6 py-3 flex items-center justify-between z-10 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 text-white shadow-md cursor-pointer">
-            <ChefHat size={20} />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-bold text-lg tracking-tight text-slate-100">
-                {isCakeKitchen ? 'Cake Chef Kitchen' : 'Snacks Chef Kitchen'}
-              </h1>
-              <span className="text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded-full cursor-pointer">
-                Single Page Board (3x2 Grid)
-              </span>
+      <header className="bg-white/95 backdrop-blur-md border-b border-[#D0C0C0] px-4 md:px-6 py-3 flex flex-col md:flex-row md:items-center justify-between z-10 shrink-0 gap-3 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-[#CD0D0D] text-white shadow-md shadow-[#CD0D0D]/20 shrink-0">
+              <ChefHat size={18} />
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">Real-time Order Preparation Board</p>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <h1 className="font-extrabold text-base md:text-lg tracking-tight text-[#CD0D0D]">
+                  Chef Kitchen
+                </h1>
+                <span className="text-[9px] font-extrabold bg-[#CD0D0D]/10 text-[#CD0D0D] border border-[#CD0D0D]/20 px-2 py-0.5 rounded-full">
+                  Live Board
+                </span>
+              </div>
+              <p className="text-[10px] md:text-xs text-[#6E6262] font-semibold">Real-Time Kitchen Operations</p>
+            </div>
+          </div>
+
+          <div className="flex md:hidden items-center gap-2">
+            <button 
+              onClick={fetchChefOrders}
+              className="p-2 rounded-xl bg-white border border-[#D0C0C0] text-[#6E6262] hover:text-[#CD0D0D] transition-colors cursor-pointer shadow-sm"
+            >
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            </button>
+            <button 
+              onClick={onLogout}
+              className="p-2 rounded-xl bg-white border border-[#D0C0C0] text-[#6E6262] hover:text-[#CD0D0D] transition-colors cursor-pointer shadow-sm"
+            >
+              <LogOut size={14} />
+            </button>
           </div>
         </div>
 
-        {/* Kitchen Switcher & Action Buttons */}
-        <div className="flex items-center gap-3">
-          {/* Switcher */}
-          <div className="flex bg-slate-950/80 border border-slate-800 p-1 rounded-xl">
-            <button
-              onClick={() => setActiveKitchen('cake_chef')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                isCakeKitchen
-                  ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white shadow-md'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <ChefHat size={13} />
-              <span>Cake Chef</span>
-            </button>
-            <button
-              onClick={() => setActiveKitchen('snacks_chef')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                !isCakeKitchen
-                  ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-white shadow-md'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Utensils size={13} />
-              <span>Snacks Chef</span>
-            </button>
+        {/* Category Tabs & Actions */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-4">
+          {/* Mobile Category Tabs */}
+          <div className="flex bg-[#FAF8F8] border border-[#D0C0C0] p-1 rounded-xl overflow-x-auto scrollbar-none max-w-full">
+            {tabs.map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-3 py-1 rounded-lg text-xs font-extrabold whitespace-nowrap transition-all cursor-pointer ${
+                  activeTab === tab
+                    ? 'bg-[#CD0D0D] text-white shadow-sm'
+                    : 'text-[#6E6262] hover:text-[#1E1818]'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
           </div>
 
-          <button 
-            onClick={fetchChefOrders}
-            className="p-2 rounded-xl bg-slate-800/80 border border-slate-700/50 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-            title="Refresh Board"
+          {/* Desktop Actions */}
+          <div className="hidden md:flex items-center gap-2 border-l border-[#D0C0C0] pl-4">
+            <button 
+              onClick={fetchChefOrders}
+              className="p-2 rounded-xl bg-white border border-[#D0C0C0] text-[#6E6262] hover:text-[#CD0D0D] transition-colors cursor-pointer shadow-sm"
+              title="Refresh Board"
+            >
+              <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+            </button>
+            
+            <button 
+              onClick={onLogout}
+              className="text-xs text-[#6E6262] hover:text-[#CD0D0D] bg-white border border-[#D0C0C0] px-3 py-2 rounded-xl font-bold transition-colors cursor-pointer shadow-sm flex items-center gap-1"
+            >
+              <LogOut size={13} />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile Column Quick Switcher */}
+        <div className="flex md:hidden bg-white border border-[#D0C0C0] p-1 rounded-xl overflow-x-auto">
+          <button
+            onClick={() => setMobileColFilter('all')}
+            className={`flex-1 py-1 px-2 rounded-lg text-[11px] font-extrabold text-center transition-all ${
+              mobileColFilter === 'all' ? 'bg-[#CD0D0D] text-white' : 'text-[#6E6262]'
+            }`}
           >
-            <RefreshCw size={15} />
+            All ({orders.length})
           </button>
-          
-          <button 
-            onClick={onLogout}
-            className="text-xs text-slate-400 hover:text-rose-400 bg-slate-800/35 border border-slate-800 px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <LogOut size={13} />
-            <span>Sign Out</span>
-          </button>
+          {columns.map(c => {
+            const count = getOrdersInColumn(c.id).length;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setMobileColFilter(c.id)}
+                className={`flex-1 py-1 px-2 rounded-lg text-[11px] font-extrabold text-center transition-all ${
+                  mobileColFilter === c.id ? 'bg-[#CD0D0D] text-white' : 'text-[#6E6262]'
+                }`}
+              >
+                {c.name} ({count})
+              </button>
+            );
+          })}
         </div>
       </header>
 
-      {/* Single Page 3x2 Grid Container without page scrollbar */}
-      <main className="flex-1 p-4 z-10 max-w-7xl mx-auto w-full overflow-hidden select-none flex flex-col justify-between">
+      {/* Grid Container */}
+      <main className="flex-1 p-3 md:p-4 z-10 max-w-7xl mx-auto w-full overflow-y-auto md:overflow-hidden select-none flex flex-col justify-between">
         {loading && orders.length === 0 ? (
-          <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 space-y-3">
-            <RefreshCw size={36} className="animate-spin text-rose-500" />
-            <p className="text-sm">Fetching chef orders...</p>
+          <div className="w-full h-64 flex flex-col items-center justify-center text-[#6E6262] space-y-3">
+            <RefreshCw size={36} className="animate-spin text-[#CD0D0D]" />
+            <p className="text-xs font-bold">Fetching kitchen tickets...</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 w-full h-full">
-            {columns.map((col, idx) => {
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 w-full h-full pb-6 md:pb-0">
+            {visibleColumns.map((col) => {
               const colOrders = getOrdersInColumn(col.id);
-
-              if (col.id === 'summary') {
-                return (
-                  <div key="summary" className="bg-slate-900/30 border border-slate-800/50 p-3.5 rounded-2xl flex flex-col justify-between h-[calc(43vh-15px)] backdrop-blur-md">
-                    <div className="flex justify-between items-center mb-1.5 pb-1.5 border-b border-slate-800/50">
-                      <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                        <h3 className="font-bold text-sm text-slate-200">Kitchen Summary</h3>
-                      </div>
-                      <span className="text-[10px] font-bold bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full cursor-pointer">
-                        Active
-                      </span>
-                    </div>
-
-                    <div className="flex-1 flex flex-col items-center justify-center text-center space-y-2 p-2">
-                      <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-400">
-                        <ChefHat size={28} />
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-bold text-slate-200">Snacks Kitchen Status</h4>
-                        <p className="text-[10px] text-slate-400 mt-1">All {orders.length} active snack orders loaded cleanly.</p>
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
 
               return (
                 <div 
                   key={col.id} 
-                  className="bg-slate-900/40 border border-slate-800/60 p-3.5 rounded-2xl flex flex-col h-[calc(43vh-15px)] backdrop-blur-md transition-all hover:border-slate-700/80 overflow-hidden"
+                  className="bg-white border border-[#D0C0C0] p-3.5 md:p-4 rounded-3xl flex flex-col min-h-[380px] md:h-[calc(100vh-140px)] shadow-sm overflow-hidden"
                 >
                   {/* Column Header */}
-                  <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-slate-800/50 shrink-0">
-                    <div className="flex items-center gap-2 cursor-pointer">
+                  <div className="flex justify-between items-center mb-3 pb-2 border-b border-[#E8E0E0] shrink-0">
+                    <div className="flex items-center gap-2">
                       <span className={`h-2.5 w-2.5 rounded-full ${
-                        col.id === 'pending' ? 'bg-amber-400 animate-ping' :
-                        col.id === 'accepted' ? 'bg-blue-400' :
-                        col.id === 'preparing' ? 'bg-purple-400' :
-                        col.id === 'ready' ? 'bg-emerald-400' : 'bg-pink-400'
+                        col.id === 'pending' ? 'bg-amber-500 animate-ping' :
+                        col.id === 'accepted' ? 'bg-sky-500' :
+                        col.id === 'ready' ? 'bg-emerald-500' : 'bg-[#CD0D0D]'
                       }`} />
-                      <h3 className="font-bold text-xs text-slate-200">{col.name}</h3>
-                      {idx < 3 ? (
-                        <span className="text-[8px] font-semibold text-rose-400 bg-rose-500/10 px-1.5 py-0.5 rounded cursor-pointer">
-                          Row 1
-                        </span>
-                      ) : (
-                        <span className="text-[8px] font-semibold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded cursor-pointer">
-                          Row 2
-                        </span>
-                      )}
+                      <h3 className="font-extrabold text-xs text-[#1E1818] uppercase tracking-wider">{col.name}</h3>
                     </div>
-                    <span className="text-[10px] font-bold bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full cursor-pointer">
+                    <span className="text-[10px] font-black bg-[#FAF8F8] border border-[#D0C0C0] text-[#CD0D0D] px-2.5 py-0.5 rounded-full">
                       {colOrders.length}
                     </span>
                   </div>
 
-                  {/* Column Body with single vibrant scrollbar */}
-                  <div className="flex-1 overflow-y-auto space-y-2.5 pr-1.5">
+                  {/* Column Body */}
+                  <div className="flex-1 overflow-y-auto space-y-3 pr-1">
                     {colOrders.length === 0 ? (
-                      <div className="h-full flex items-center justify-center border border-dashed border-slate-800/50 rounded-xl text-[10px] text-slate-500">
+                      <div className="h-40 md:h-full flex items-center justify-center border border-dashed border-[#D0C0C0] rounded-2xl text-xs text-[#6E6262] font-semibold">
                         No orders in {col.name}
                       </div>
                     ) : (
                       colOrders.map(order => {
-                        const domainItems = order.items.filter(item => item.category === categoryFilter);
+                        const domainItems = order.items.filter(item => itemMatchesTab(item, activeTab));
                         const displayStatus = domainItems[0]?.status || 'pending';
                         const nextCol = getNextColumnId(displayStatus);
 
                         return (
                           <div 
                             key={order._id} 
-                            className="bg-slate-950/70 border border-slate-800 hover:border-rose-500/40 p-3 rounded-xl space-y-2.5 transition-all shadow-md cursor-pointer group"
+                            className="bg-[#FAF8F8] border border-[#D0C0C0] hover:border-[#CD0D0D] p-3.5 rounded-2xl space-y-3 transition-all shadow-sm group"
                           >
                             {/* Order Header */}
                             <div className="flex justify-between items-start">
-                              <div className="cursor-pointer">
-                                <h4 className="text-xs font-extrabold text-rose-400 group-hover:text-rose-300 transition-colors">
-                                  T{order.tableNumber} - {order.customerName}
+                              <div>
+                                <h4 className="text-xs font-black text-[#CD0D0D]">
+                                  TABLE {order.tableNumber} - {order.customerName}
                                 </h4>
-                                <p className="text-[9px] text-slate-500 mt-0.5">Order #{order._id.slice(-4)}</p>
+                                <p className="text-[10px] text-[#6E6262] font-mono mt-0.5">Order #{order._id.slice(-4)}</p>
                               </div>
-                              <span className="text-[9px] text-slate-400 flex items-center gap-1 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800 cursor-pointer">
-                                <Clock size={9} />
+                              <span className="text-[10px] text-[#6E6262] font-semibold flex items-center gap-1 bg-white px-2 py-0.5 rounded-lg border border-[#D0C0C0]">
+                                <Clock size={10} className="text-[#CD0D0D]" />
                                 {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                               </span>
                             </div>
 
                             {/* Items List */}
-                            <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800 space-y-1 cursor-pointer">
+                            <div className="bg-white p-2.5 rounded-xl border border-[#E8E0E0] space-y-2">
                               {domainItems.map(item => (
-                                <div key={item._id} className="text-xs cursor-pointer">
+                                <div key={item._id} className="text-xs space-y-1 border-b border-[#E8E0E0]/60 last:border-b-0 pb-1.5 last:pb-0">
                                   <div className="flex justify-between items-center">
-                                    <span className="font-semibold text-slate-200 text-[11px]">{item.product?.name}</span>
-                                    <span className="text-rose-400 font-bold bg-rose-500/10 px-1.5 py-0.5 rounded text-[9px]">x{item.quantity}</span>
+                                    <span className="font-bold text-[#1E1818] text-[11px]">
+                                      {(item.product as any)?.name || (item as any)?.name || 'Food Item'}
+                                    </span>
+                                    <span className="text-[#CD0D0D] font-extrabold bg-[#CD0D0D]/10 px-2 py-0.5 rounded text-[10px]">x{item.quantity}</span>
                                   </div>
                                   {item.instructions && (
-                                    <p className="text-[9px] text-amber-400/90 italic mt-0.5 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
-                                      "{item.instructions}"
-                                    </p>
+                                    <div className="text-[10px] font-black text-[#CD0D0D] bg-[#CD0D0D]/10 border border-[#CD0D0D]/30 px-2 py-1 rounded-lg flex items-center gap-1.5 shadow-xs">
+                                      <span>📌 Note: "{item.instructions}"</span>
+                                    </div>
                                   )}
                                 </div>
                               ))}
@@ -372,23 +381,23 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
                             {/* Preparation inputs */}
                             {(displayStatus === 'pending' || displayStatus === 'accepted') && (
-                              <div className="grid grid-cols-2 gap-1.5">
+                              <div className="grid grid-cols-2 gap-2">
                                 <div>
-                                  <label className="block text-[8px] uppercase font-bold tracking-wider text-slate-400 mb-0.5 cursor-pointer">Est. Mins</label>
+                                  <label className="block text-[9px] uppercase font-bold tracking-wider text-[#6E6262] mb-0.5">Est. Mins</label>
                                   <input
                                     type="number"
                                     placeholder="20"
-                                    className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 rounded-lg px-2 py-0.5 text-xs text-slate-200 focus:outline-none cursor-text"
+                                    className="w-full bg-white border border-[#D0C0C0] focus:border-[#CD0D0D] rounded-xl px-2.5 py-1 text-xs text-[#1E1818] focus:outline-none"
                                     value={estTime[order._id] || ''}
                                     onChange={(e) => setEstTime({ ...estTime, [order._id]: parseInt(e.target.value) })}
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-[8px] uppercase font-bold tracking-wider text-slate-400 mb-0.5 cursor-pointer">Chef Note</label>
+                                  <label className="block text-[9px] uppercase font-bold tracking-wider text-[#6E6262] mb-0.5">Chef Note</label>
                                   <input
                                     type="text"
                                     placeholder="Baking..."
-                                    className="w-full bg-slate-900 border border-slate-800 focus:border-rose-500 rounded-lg px-2 py-0.5 text-xs text-slate-200 focus:outline-none cursor-text"
+                                    className="w-full bg-white border border-[#D0C0C0] focus:border-[#CD0D0D] rounded-xl px-2.5 py-1 text-xs text-[#1E1818] focus:outline-none"
                                     value={chefNotes[order._id] || ''}
                                     onChange={(e) => setChefNotes({ ...chefNotes, [order._id]: e.target.value })}
                                   />
@@ -397,33 +406,33 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                             )}
 
                             {/* Actions */}
-                            <div className="flex gap-1.5 justify-end pt-0.5">
+                            <div className="flex gap-2 justify-end pt-1">
                               {displayStatus === 'pending' ? (
                                 <>
                                   <button
                                     onClick={() => handleRejectClick(order)}
-                                    className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white transition-colors cursor-pointer"
+                                    className="p-2.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white border border-red-500/20 transition-colors cursor-pointer"
                                     title="Reject Order"
                                   >
-                                    <Ban size={12} />
+                                    <Ban size={14} />
                                   </button>
                                   
                                   <button
                                     onClick={() => updateStatus(order._id, 'accepted')}
-                                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                                    className="flex-1 items-center justify-center gap-1.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-extrabold transition-colors cursor-pointer flex shadow-sm active:scale-[0.98]"
                                   >
-                                    <Check size={12} />
-                                    <span>Accept</span>
+                                    <Check size={14} />
+                                    <span>Accept Order</span>
                                   </button>
                                 </>
                               ) : nextCol ? (
                                 <button
                                   onClick={() => updateStatus(order._id, nextCol)}
-                                  className="w-full flex items-center justify-center gap-1 py-1 rounded-lg bg-gradient-to-r from-rose-500 to-amber-500 hover:brightness-110 text-white text-[11px] font-bold transition-all shadow cursor-pointer"
+                                  className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-[#CD0D0D] hover:bg-[#A60A0A] text-white text-xs font-extrabold transition-all shadow-md cursor-pointer active:scale-[0.98]"
                                 >
-                                  <Play size={11} />
+                                  <Play size={13} />
                                   <span>Move to {columns.find(c => c.id === nextCol)?.name}</span>
-                                  <ChevronRight size={11} />
+                                  <ChevronRight size={13} />
                                 </button>
                               ) : null}
                             </div>
@@ -441,15 +450,15 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
       {/* Rejection Modal */}
       {showRejectModal && selectedOrder && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl w-full max-w-sm space-y-4 shadow-2xl">
-            <div className="flex items-center gap-2 text-red-400">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-[#D0C0C0] p-6 rounded-3xl w-full max-w-sm space-y-4 shadow-2xl text-[#1E1818]">
+            <div className="flex items-center gap-2 text-[#CD0D0D]">
               <AlertCircle size={20} />
-              <h3 className="font-bold text-md">Select Reject Reason</h3>
+              <h3 className="font-extrabold text-sm">Select Reject Reason</h3>
             </div>
             
-            <p className="text-xs text-slate-400 cursor-pointer">
-              Please choose a reason for rejecting Table {selectedOrder.tableNumber}'s order:
+            <p className="text-xs text-[#6E6262] font-semibold">
+              Choose a reason for rejecting Table {selectedOrder.tableNumber}'s order:
             </p>
 
             <div className="space-y-2">
@@ -457,10 +466,10 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                 <button
                   key={reason}
                   onClick={() => setRejectionReason(reason)}
-                  className={`w-full p-3 rounded-xl border text-left text-xs transition-colors flex justify-between items-center cursor-pointer ${
+                  className={`w-full p-3 rounded-2xl border text-left text-xs transition-colors flex justify-between items-center cursor-pointer ${
                     rejectionReason === reason 
-                      ? 'bg-red-500/10 border-red-500/40 text-red-400 font-semibold' 
-                      : 'bg-slate-950/40 border-slate-800 text-slate-300 hover:bg-slate-900'
+                      ? 'bg-[#CD0D0D]/10 border-[#CD0D0D] text-[#CD0D0D] font-extrabold' 
+                      : 'bg-[#FAF8F8] border-[#D0C0C0] text-[#1E1818] hover:bg-white'
                   }`}
                 >
                   <span>{reason}</span>
@@ -472,13 +481,13 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
             <div className="flex gap-2 justify-end pt-2">
               <button
                 onClick={() => { setShowRejectModal(false); setSelectedOrder(null); }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                className="px-4 py-2.5 bg-[#FAF8F8] hover:bg-white text-[#6E6262] border border-[#D0C0C0] rounded-xl text-xs font-bold cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={submitRejection}
-                className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                className="px-4 py-2.5 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white rounded-xl text-xs font-extrabold cursor-pointer"
               >
                 Reject Order
               </button>

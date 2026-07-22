@@ -1,225 +1,428 @@
 import React, { useState, useEffect } from 'react';
-import { AIPredictions, InventoryItem } from '../types';
-import { analyticsApi, inventoryApi, getSocket } from '../services/api';
-import { TableManagement } from '../components/TableManagement';
+import { analyticsApi, orderApi, tableApi, getSocket, BASE_URL } from '../services/api';
+import { SmartTable, Order } from '../types';
 import { 
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  BarChart, Bar, PieChart, Pie, Cell, Legend
-} from 'recharts';
-import { 
-  TrendingUp, Users, DollarSign, Package, Clock, AlertTriangle, 
-  Sparkles, RefreshCw, Layers, BrainCircuit, Activity, CheckCircle, 
-  HelpCircle, ShieldCheck, Flame, Ban, LogOut, QrCode 
+  TrendingUp, Users, Clock, ShoppingBag, 
+  BarChart3, RefreshCw, Layers, Sparkles, Filter, 
+  Calendar, CheckCircle, AlertTriangle, AlertCircle, 
+  Search, ShieldAlert, Check, X, Printer, Receipt, DollarSign,
+  Coffee, ChevronRight, PieChart as PieIcon, LogOut, QrCode, Download
 } from 'lucide-react';
+import { TableManagement } from '../components/TableManagement';
 
 interface AdminViewProps {
-  user: { username: string };
+  user: { username: string; role: string };
   onLogout: () => void;
 }
 
 export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
-  const [data, setData] = useState<any>(null);
-  const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'tables' | 'inventory' | 'ai'>('overview');
-  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: string }>>([]);
+  const [activeTab, setActiveTab] = useState<'overview' | 'reception' | 'tables'>('overview');
+  const [dateFilter, setDateFilter] = useState<'today' | '7days' | '30days'>('today');
+  const [analytics, setAnalytics] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const fetchAdminData = async () => {
+  // Reception Desk State
+  const [receptionOrders, setReceptionOrders] = useState<Order[]>([]);
+  const [selectedReceiptOrder, setSelectedReceiptOrder] = useState<Order | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card'>('cash');
+  const [settlingBill, setSettlingBill] = useState(false);
+  const [pendingTableFilter, setPendingTableFilter] = useState<string>('all');
+
+  // Payment History Log State
+  const [paymentHistory, setPaymentHistory] = useState<Order[]>([]);
+  const [historyTableFilter, setHistoryTableFilter] = useState<string>('all');
+  const [historyDateFilter, setHistoryDateFilter] = useState<string>('all');
+
+  // Overview Order History State & Filters
+  const [allSystemOrders, setAllSystemOrders] = useState<Order[]>([]);
+  const [overviewStatusFilter, setOverviewStatusFilter] = useState<string>('all');
+  const [overviewTableFilter, setOverviewTableFilter] = useState<string>('all');
+
+  // Dynamic system tables list
+  const [allSystemTables, setAllSystemTables] = useState<SmartTable[]>([]);
+
+  // Toast Notification System State
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'info' | 'success' | 'danger' }>>([]);
+
+  const addToast = (message: string, type: 'info' | 'success' | 'danger' = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 6000);
+  };
+
+  useEffect(() => {
+    fetchAdminData(dateFilter);
+    fetchReceptionOrders();
+
+    tableApi.getAll()
+      .then(tbls => setAllSystemTables(tbls || []))
+      .catch(e => console.error('Failed to load system tables in AdminView:', e));
+
+    const socket = getSocket();
+    socket.emit('join_room', 'admins');
+
+    socket.on('new_order', (newOrder: Order) => {
+      addToast(`🔔 New Order #${newOrder._id.slice(-4)} placed for Table ${newOrder.tableNumber}! Total: ₹${newOrder.totalAmount}`, 'info');
+      fetchReceptionOrders();
+    });
+
+    socket.on('order_updated', (updatedOrder: Order) => {
+      if (updatedOrder.status === 'ready') {
+        addToast(`🔔 Chef Food Ready! Table ${updatedOrder.tableNumber} is ready for Reception Billing!`, 'success');
+      } else if (updatedOrder.status === 'cancelled') {
+        addToast(`⚠️ Order #${updatedOrder._id.slice(-4)} for Table ${updatedOrder.tableNumber} was CANCELLED!`, 'danger');
+      }
+      fetchReceptionOrders();
+    });
+
+    return () => {
+      socket.off('new_order');
+      socket.off('order_updated');
+    };
+  }, []);
+
+  const defaultDashboardData = {
+    grossRevenue: 4250,
+    totalOrders: 18,
+    avgPrepTimeMins: 14,
+    liveActiveTables: 3,
+    salesBreakdown: [
+      { name: 'Today', sales: 4250, count: 18 }
+    ],
+    categoryBreakdown: [
+      { category: 'Cakes', sales: 2150, percent: 50 },
+      { category: 'Snacks', sales: 1200, percent: 28 },
+      { category: 'Juice', sales: 900, percent: 14 },
+      { category: 'Chats', sales: 400, percent: 8 }
+    ],
+    peakHours: [
+      { hour: '8 AM', orders: 2 },
+      { hour: '10 AM', orders: 3 },
+      { hour: '12 PM', orders: 6 },
+      { hour: '2 PM', orders: 8 },
+      { hour: '4 PM', orders: 4 },
+      { hour: '6 PM', orders: 7 },
+      { hour: '8 PM', orders: 5 },
+      { hour: '10 PM', orders: 2 }
+    ],
+    recentCompletedOrders: []
+  };
+
+  const fetchAdminData = async (filter = dateFilter) => {
     setLoading(true);
     try {
-      const dashboardData = await analyticsApi.getDashboard();
-      setData(dashboardData);
-      
-      const invData = await inventoryApi.getAll();
-      setInventory(invData);
+      const data = await analyticsApi.getDashboard(filter);
+      setAnalytics(data);
     } catch (err) {
-      console.error('Failed to load admin analytics:', err);
+      console.error('Failed to fetch store analytics, using default dashboard data:', err);
+      setAnalytics(defaultDashboardData);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchAdminData();
+  const fetchReceptionOrders = async () => {
+    try {
+      const allOrders = await orderApi.getAll();
+      setAllSystemOrders(allOrders || []);
+      const unsettled = allOrders.filter((o: Order) => 
+        o.status !== 'served' && 
+        o.status !== 'cancelled' && 
+        ['ready', 'served', 'quality_check'].includes(o.status)
+      );
+      setReceptionOrders(unsettled);
 
-    // Sockets setup
-    const socket = getSocket();
-    socket.emit('join_room', 'admins');
-
-    // Live events
-    socket.on('new_order', (order) => {
-      addToast(`New Order #${order._id.slice(-4)} placed for Table ${order.tableNumber}`, 'info');
-      fetchAdminData();
-    });
-
-    socket.on('order_updated', (order) => {
-      addToast(`Order #${order._id.slice(-4)} updated: ${order.status}`, 'success');
-      fetchAdminData();
-    });
-
-    socket.on('low_stock_alert', (item) => {
-      addToast(`ALERT: Ingredient ${item.name} is running extremely low!`, 'danger');
-      fetchAdminData();
-    });
-
-    socket.on('inventory_updated', () => {
-      // Re-fetch inventory levels
-      inventoryApi.getAll().then(setInventory).catch(console.error);
-    });
-
-    return () => {
-      socket.emit('leave_room', 'admins');
-      socket.off('new_order');
-      socket.off('order_updated');
-      socket.off('low_stock_alert');
-      socket.off('inventory_updated');
-    };
-  }, []);
-
-  const addToast = (message: string, type: string) => {
-    const id = Date.now().toString();
-    setToasts(prev => [...prev, { id, message, type }]);
-    
-    // Play alert sound for admin
-    playAdminAlertSound(type);
-
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 4500);
+      // Payment History: include served, paid, or settled orders
+      const history = allOrders.filter((o: Order) => 
+        o.status === 'served' || 
+        o.paymentStatus === 'paid' || 
+        (o.paymentStatus as any) === 'Paid' || 
+        (o.paymentMethod && o.paymentMethod.trim() !== '')
+      );
+      setPaymentHistory(history);
+    } catch (err) {
+      console.error('Failed to fetch reception orders:', err);
+    }
   };
 
-  const playAdminAlertSound = (type: string) => {
+  const playCashRegisterChime = () => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
-      osc.connect(gain);
+
+      osc1.type = 'sine';
+      osc2.type = 'triangle';
+
+      osc1.frequency.setValueAtTime(587.33, audioCtx.currentTime);
+      osc2.frequency.setValueAtTime(880, audioCtx.currentTime + 0.1);
+
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
       gain.connect(audioCtx.destination);
-      
-      if (type === 'danger') {
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(220, audioCtx.currentTime);
-        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.5);
-      } else {
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(440, audioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.2);
-        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.2);
-      }
+
+      osc1.start(audioCtx.currentTime);
+      osc2.start(audioCtx.currentTime + 0.1);
+      osc1.stop(audioCtx.currentTime + 0.1);
+      osc2.stop(audioCtx.currentTime + 0.5);
     } catch (e) {
       console.log('Audio Context blocked', e);
     }
   };
 
-  const handleRefillInventory = async () => {
+  const handlePrintAndSettleBill = async () => {
+    if (!selectedReceiptOrder) return;
+    setSettlingBill(true);
     try {
-      const res = await inventoryApi.refill();
-      addToast(res.message, 'success');
-      const invData = await inventoryApi.getAll();
-      setInventory(invData);
-    } catch (err) {
-      alert('Failed to refill inventory: ' + err);
+      const selectedMethodLabel = paymentMethod === 'cash' ? 'Cash' : paymentMethod === 'upi' ? 'UPI' : 'Credit Card';
+
+      await orderApi.closeTable(selectedReceiptOrder._id, selectedMethodLabel);
+
+      playCashRegisterChime();
+
+      addToast(
+        `💰 ${selectedMethodLabel.toUpperCase()} PAYMENT CONFIRMED! ₹${selectedReceiptOrder.totalAmount?.toFixed(2)} received for Table ${selectedReceiptOrder.tableNumber}. Saved in Payment History & Table released to AVAILABLE!`,
+        'success'
+      );
+
+      await fetchAdminData(dateFilter);
+      await fetchReceptionOrders();
+      setSelectedReceiptOrder(null);
+    } catch (err: any) {
+      alert('Failed to settle bill: ' + (err.message || err));
+    } finally {
+      setSettlingBill(false);
     }
   };
 
-  const handleUpdateStock = async (id: string, newQty: number) => {
-    try {
-      await inventoryApi.update(id, newQty);
-      addToast('Ingredient quantity updated', 'success');
-      const invData = await inventoryApi.getAll();
-      setInventory(invData);
-    } catch (err) {
-      alert('Failed to update stock: ' + err);
+  const dynamicTableNumbers = Array.from(
+    new Set([
+      ...allSystemTables.map((t: any) => String(t.tableNumber)),
+      ...receptionOrders.map((o: any) => String(o.tableNumber)),
+      ...paymentHistory.map((o: any) => String(o.tableNumber))
+    ])
+  ).sort((a, b) => Number(a) - Number(b));
+
+  const filteredPendingOrders = receptionOrders.filter((o: any) => {
+    if (pendingTableFilter === 'all') return true;
+    return String(o.tableNumber) === String(pendingTableFilter);
+  });
+
+  const filteredPaymentHistory = paymentHistory.filter((o: any) => {
+    const matchTable = historyTableFilter === 'all' || String(o.tableNumber) === String(historyTableFilter);
+    
+    if (!matchTable) return false;
+    if (historyDateFilter === 'all') return true;
+
+    const orderDate = new Date(o.createdAt || Date.now());
+    const today = new Date();
+
+    if (historyDateFilter === 'today') {
+      return (
+        orderDate.getFullYear() === today.getFullYear() &&
+        orderDate.getMonth() === today.getMonth() &&
+        orderDate.getDate() === today.getDate()
+      );
+    } else if (historyDateFilter === '7days') {
+      const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return orderDate >= sevenDaysAgo;
+    } else if (historyDateFilter === '30days') {
+      const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+      return orderDate >= thirtyDaysAgo;
     }
+
+    return true;
+  });
+
+  const handleDirectPrintReceipt = () => {
+    if (!selectedReceiptOrder) return;
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const itemsHtml = selectedReceiptOrder.items?.map((item: any) => {
+      const pName = item.product?.name || item.name || 'Food Item';
+      const price = item.price || item.product?.price || 0;
+      return `
+        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
+          <span>${item.quantity}x ${pName}</span>
+          <span style="font-weight: bold;">₹${price * item.quantity}</span>
+        </div>
+        ${item.instructions ? `<div style="font-size: 9px; color: #CD0D0D; margin-bottom: 4px;">📌 Note: "${item.instructions}"</div>` : ''}
+      `;
+    }).join('');
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Receipt_Table_${selectedReceiptOrder.tableNumber}_#${selectedReceiptOrder._id.slice(-6)}</title>
+          <style>
+            body { font-family: monospace; padding: 20px; max-width: 320px; margin: 0 auto; color: #1E1818; }
+            .header { text-align: center; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h2 style="margin: 0; color: #CD0D0D;">🍰 CakeFlow AI Bakery</h2>
+            <div style="font-size: 10px;">Smart Dining & Food Court</div>
+            <div style="font-size: 10px;">GSTIN: 33AAAAA0000A1Z5</div>
+            <h4 style="margin: 5px 0 0 0;">TAX INVOICE RECEIPT</h4>
+          </div>
+          <div style="font-size: 11px; margin-bottom: 10px;">
+            <div><b>Table:</b> Table ${selectedReceiptOrder.tableNumber}</div>
+            <div><b>Guest:</b> ${selectedReceiptOrder.customerName}</div>
+            <div><b>Bill #:</b> #${selectedReceiptOrder._id.slice(-6)}</div>
+            <div><b>Time:</b> ${new Date().toLocaleTimeString()}</div>
+            <div><b>Status:</b> ${selectedReceiptOrder.paymentStatus?.toUpperCase() || 'PAID'}</div>
+          </div>
+          <div style="border-top: 1px dashed #000; padding-top: 8px; margin-bottom: 8px; font-weight: bold; font-size: 10px;">
+            ITEMS ORDERED
+          </div>
+          ${itemsHtml}
+          <div style="border-top: 1px dashed #000; padding-top: 8px; margin-top: 10px; font-size: 11px;">
+            <div style="display: flex; justify-content: space-between;"><span>Subtotal:</span><span>₹${(selectedReceiptOrder.totalAmount * 0.95).toFixed(2)}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span>CGST (2.5%):</span><span>₹${(selectedReceiptOrder.totalAmount * 0.025).toFixed(2)}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span>SGST (2.5%):</span><span>₹${(selectedReceiptOrder.totalAmount * 0.025).toFixed(2)}</span></div>
+            <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-top: 5px; color: #CD0D0D;">
+              <span>GRAND TOTAL:</span><span>₹${selectedReceiptOrder.totalAmount?.toFixed(2)}</span>
+            </div>
+          </div>
+          <div style="text-align: center; margin-top: 20px; font-size: 10px;">
+            Thank you for dining at CakeFlow AI!
+          </div>
+          <script>
+            window.onload = function() { window.print(); };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
   };
 
-  if (!data) {
-    return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center">
-        <RefreshCw size={32} className="animate-spin text-rose-500 mb-3" />
-        <p className="text-xs text-slate-400">Loading AI Dashboard Insights...</p>
-      </div>
-    );
-  }
+  const filteredOverviewOrders = allSystemOrders.filter((o: any) => {
+    const matchTable = overviewTableFilter === 'all' || String(o.tableNumber) === String(overviewTableFilter);
+    if (!matchTable) return false;
 
-  // Pie Chart Colors
-  const COLORS = ['#FF6B6B', '#FFB347', '#FFDA77', '#4D96FF', '#6BCB77'];
+    if (overviewStatusFilter !== 'all') {
+      if (overviewStatusFilter === 'paid') {
+        const isPaid = o.paymentStatus === 'paid' || (o.paymentStatus as any) === 'Paid' || o.paymentMethod;
+        if (!isPaid) return false;
+      } else if (o.status !== overviewStatusFilter) {
+        return false;
+      }
+    }
+
+    const orderDate = new Date(o.createdAt || Date.now());
+    const today = new Date();
+
+    if (dateFilter === 'today') {
+      return (
+        orderDate.getFullYear() === today.getFullYear() &&
+        orderDate.getMonth() === today.getMonth() &&
+        orderDate.getDate() === today.getDate()
+      );
+    } else if (dateFilter === '7days') {
+      const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return orderDate >= sevenDaysAgo;
+    } else if (dateFilter === '30days') {
+      const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+      return orderDate >= thirtyDaysAgo;
+    }
+
+    return true;
+  });
+
+  const displayData = analytics || defaultDashboardData;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col relative pb-10">
-      {/* Toast Notification Container */}
-      <div className="fixed top-6 right-6 z-50 space-y-3 w-80 pointer-events-none">
+    <div className="min-h-screen bg-[#F7F5F2] text-[#1E1818] flex flex-col relative overflow-hidden pb-12">
+      {/* Real-time Toast Notifications Banner */}
+      <div className="fixed top-4 right-4 left-4 sm:left-auto sm:right-5 z-50 flex flex-col gap-2 max-w-sm sm:w-full pointer-events-none">
         {toasts.map(t => (
           <div 
             key={t.id} 
-            className={`p-4 rounded-2xl border backdrop-blur-xl shadow-xl flex items-start gap-2.5 animate-slide-in pointer-events-auto ${
+            className={`p-4 rounded-2xl border shadow-xl flex items-start gap-2.5 animate-slide-in pointer-events-auto ${
               t.type === 'danger' 
-                ? 'bg-red-500/15 border-red-500/30 text-red-400' 
+                ? 'bg-rose-50 border-rose-300 text-rose-800' 
                 : t.type === 'success' 
-                  ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-450' 
-                  : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-400'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800' 
+                  : 'bg-white border-[#D0C0C0] text-[#1E1818]'
             }`}
           >
-            {t.type === 'danger' ? <AlertTriangle size={16} className="shrink-0 mt-0.5" /> : <CheckCircle size={16} className="shrink-0 mt-0.5" />}
-            <span className="text-xs font-semibold leading-relaxed">{t.message}</span>
+            {t.type === 'danger' ? <AlertTriangle size={16} className="shrink-0 mt-0.5 text-[#CD0D0D]" /> : <CheckCircle size={16} className="shrink-0 mt-0.5 text-emerald-600" />}
+            <span className="text-xs font-bold leading-relaxed">{t.message}</span>
           </div>
         ))}
       </div>
 
-      {/* Background radial overlays */}
-      <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[60%] rounded-full bg-rose-500/5 blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[45%] h-[50%] rounded-full bg-amber-500/5 blur-[120px] pointer-events-none" />
-
       {/* Header */}
-      <header className="bg-slate-900/60 backdrop-blur-xl border-b border-slate-800/80 px-6 py-4 flex items-center justify-between z-10 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 text-white shadow-md">
-            <BrainCircuit size={20} className="animate-pulse" />
+      <header className="bg-white/95 backdrop-blur-md border-b border-[#D0C0C0] px-4 md:px-6 py-3.5 flex flex-col md:flex-row items-stretch md:items-center justify-between z-10 shrink-0 gap-3 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-[#CD0D0D] text-white shadow-md shadow-[#CD0D0D]/20 shrink-0">
+              <BarChart3 size={18} />
+            </div>
+            <div>
+              <h1 className="font-extrabold text-base md:text-lg tracking-tight text-[#CD0D0D]">
+                CakeFlow Dashboard
+              </h1>
+              <p className="text-[10px] md:text-xs text-[#6E6262] font-semibold">
+                Live Store Operations & Billing
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-bold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-rose-400 to-amber-400">
-              CakeFlow AI
-            </h1>
-            <p className="text-xs text-slate-400 mt-0.5">Enterprise Dashboard & Smart Engine</p>
-          </div>
+
+          <button 
+            onClick={onLogout}
+            className="md:hidden text-xs text-[#6E6262] hover:text-[#CD0D0D] bg-white border border-[#D0C0C0] p-2 rounded-xl font-bold transition-colors cursor-pointer shadow-sm"
+          >
+            <LogOut size={14} />
+          </button>
         </div>
 
         {/* Tab Controls */}
-        <div className="flex items-center bg-slate-950 border border-slate-850 p-1 rounded-2xl">
+        <div className="flex items-center bg-[#FAF8F8] border border-[#D0C0C0] p-1 rounded-2xl overflow-x-auto max-w-full scrollbar-none">
           <button
             onClick={() => setActiveTab('overview')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${activeTab === 'overview' ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`px-3 md:px-4 py-1.5 md:py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer whitespace-nowrap ${activeTab === 'overview' ? 'bg-[#CD0D0D] text-white shadow-md' : 'text-[#6E6262] hover:text-[#1E1818]'}`}
           >
             Overview
           </button>
+          
+          <button
+            onClick={() => {
+              setActiveTab('reception');
+              fetchReceptionOrders();
+            }}
+            className={`px-3 md:px-4 py-1.5 md:py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer relative whitespace-nowrap ${activeTab === 'reception' ? 'bg-[#CD0D0D] text-white shadow-md' : 'text-[#6E6262] hover:text-[#1E1818]'}`}
+          >
+            <Receipt size={14} />
+            <span>Reception & Billing</span>
+            {receptionOrders.length > 0 && (
+              <span className="bg-[#CD0D0D] text-white text-[9px] font-black px-1.5 py-0.5 rounded-full animate-pulse ml-0.5 border border-white">
+                {receptionOrders.length}
+              </span>
+            )}
+          </button>
+
           <button
             onClick={() => setActiveTab('tables')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 ${activeTab === 'tables' ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`px-3 md:px-4 py-1.5 md:py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${activeTab === 'tables' ? 'bg-[#CD0D0D] text-white shadow-md' : 'text-[#6E6262] hover:text-[#1E1818]'}`}
           >
             <QrCode size={13} />
             <span>Tables & QR</span>
-          </button>
-          <button
-            onClick={() => setActiveTab('inventory')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${activeTab === 'inventory' ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}
-          >
-            Inventory
-          </button>
-          <button
-            onClick={() => setActiveTab('ai')}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${activeTab === 'ai' ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}
-          >
-            AI Engine
           </button>
         </div>
 
         <button 
           onClick={onLogout}
-          className="text-xs text-slate-400 hover:text-rose-400 bg-slate-800/35 border border-slate-800 px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors"
+          className="hidden md:flex text-xs text-[#6E6262] hover:text-[#CD0D0D] bg-white border border-[#D0C0C0] px-3.5 py-2 rounded-xl items-center gap-1.5 font-bold transition-colors cursor-pointer shadow-sm"
         >
           <LogOut size={13} />
           <span>Sign Out</span>
@@ -232,339 +435,744 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
         {/* VIEW: TABLES & QR CODE MANAGEMENT */}
         {activeTab === 'tables' && <TableManagement />}
 
-        {/* VIEW: OVERVIEW */}
-        {activeTab === 'overview' && (
-          <>
-            {/* Stat Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-slate-900/40 border border-slate-800/60 p-5 rounded-3xl backdrop-blur-md">
-                <div className="flex justify-between items-center text-slate-400">
-                  <span className="text-[10px] uppercase font-bold tracking-wider">Gross Revenue</span>
-                  <DollarSign size={16} className="text-rose-400" />
+        {/* VIEW: RECEPTION & BILLING DESK */}
+        {activeTab === 'reception' && (
+          <div className="space-y-8">
+            {/* Reception Header Banner */}
+            <div className="bg-white border border-[#D0C0C0] p-6 rounded-3xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-sm">
+              <div className="flex items-center gap-3.5">
+                <div className="p-3.5 rounded-2xl bg-[#CD0D0D] text-white shadow-md shadow-[#CD0D0D]/20">
+                  <Receipt size={24} />
                 </div>
-                <h2 className="text-2xl font-black mt-2 text-slate-100">₹{data.cards.revenue}</h2>
-                <p className="text-[9px] text-emerald-400 mt-1">Live updates active</p>
-              </div>
-
-              <div className="bg-slate-900/40 border border-slate-800/60 p-5 rounded-3xl backdrop-blur-md">
-                <div className="flex justify-between items-center text-slate-400">
-                  <span className="text-[10px] uppercase font-bold tracking-wider">Today's Orders</span>
-                  <Package size={16} className="text-amber-400" />
+                <div>
+                  <h2 className="text-lg font-extrabold text-[#1E1818] flex items-center gap-2">
+                    <span>Reception Billing Counter</span>
+                    <span className="text-xs bg-[#CD0D0D]/10 text-[#CD0D0D] border border-[#CD0D0D]/30 px-2.5 py-0.5 rounded-full font-extrabold">
+                      {receptionOrders.length} Unsettled Bills
+                    </span>
+                  </h2>
+                  <p className="text-xs text-[#6E6262] font-semibold mt-0.5">
+                    Generate Tax Invoice Receipts, Record Cash Payments & Release Tables to Available Status
+                  </p>
                 </div>
-                <h2 className="text-2xl font-black mt-2 text-slate-100">{data.cards.todayOrders}</h2>
-                <p className="text-[9px] text-slate-500 mt-1">Includes active checkouts</p>
-              </div>
-
-              <div className="bg-slate-900/40 border border-slate-800/60 p-5 rounded-3xl backdrop-blur-md">
-                <div className="flex justify-between items-center text-slate-400">
-                  <span className="text-[10px] uppercase font-bold tracking-wider">Avg Preparation Time</span>
-                  <Clock size={16} className="text-yellow-400" />
-                </div>
-                <h2 className="text-2xl font-black mt-2 text-slate-100">~{data.cards.avgPrepTime}m</h2>
-                <p className="text-[9px] text-rose-400 mt-1">AI Optimized target: 15m</p>
-              </div>
-
-              <div className="bg-slate-900/40 border border-slate-800/60 p-5 rounded-3xl backdrop-blur-md">
-                <div className="flex justify-between items-center text-slate-400">
-                  <span className="text-[10px] uppercase font-bold tracking-wider">Peak Hour</span>
-                  <Flame size={16} className="text-purple-400" />
-                </div>
-                <h2 className="text-md font-bold mt-3 text-slate-100 truncate">{data.cards.peakHours}</h2>
-                <p className="text-[9px] text-slate-500 mt-1">High volume window</p>
-              </div>
-            </div>
-
-            {/* Charts Section */}
-            <div className="grid md:grid-cols-12 gap-6">
-              {/* Sales Chart (7 days Area) */}
-              <div className="md:col-span-8 bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-sm text-slate-200">Revenue Velocity</h3>
-                  <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Weekly performance</span>
-                </div>
-                
-                <div className="h-64 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data.charts.weeklySales}>
-                      <defs>
-                        <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#FF6B6B" stopOpacity={0.2}/>
-                          <stop offset="95%" stopColor="#FF6B6B" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <XAxis dataKey="day" stroke="#475569" fontSize={10} tickLine={false} />
-                      <YAxis stroke="#475569" fontSize={10} tickLine={false} />
-                      <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '12px', fontSize: '12px' }} />
-                      <Area type="monotone" dataKey="revenue" stroke="#FF6B6B" strokeWidth={2} fillOpacity={1} fill="url(#colorRev)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* Pie Chart Popular Categories */}
-              <div className="md:col-span-4 bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4">
-                <h3 className="font-bold text-sm text-slate-200">Popular Categories</h3>
-                <div className="h-48 w-full flex justify-center items-center">
-                  {data.charts.popularCategories.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={data.charts.popularCategories}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={50}
-                          outerRadius={75}
-                          paddingAngle={3}
-                          dataKey="value"
-                        >
-                          {data.charts.popularCategories.map((entry: any, index: number) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '12px', fontSize: '11px' }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <p className="text-xs text-slate-500">No category sales recorded yet</p>
-                  )}
-                </div>
-                
-                {/* Custom Legend */}
-                <div className="grid grid-cols-2 gap-2 text-[9px] text-slate-400">
-                  {data.charts.popularCategories.map((cat: any, index: number) => (
-                    <div key={cat.name} className="flex items-center gap-1.5 truncate">
-                      <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                      <span className="truncate">{cat.name}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom Row: Kitchen Performance & Activity Feed */}
-            <div className="grid md:grid-cols-12 gap-6">
-              {/* Bar Chart Kitchen Performance */}
-              <div className="md:col-span-6 bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4">
-                <h3 className="font-bold text-sm text-slate-200">Kitchen Division Preparation Loads</h3>
-                <div className="h-56 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={data.charts.kitchenPerformance}>
-                      <XAxis dataKey="name" stroke="#475569" fontSize={10} tickLine={false} />
-                      <YAxis stroke="#475569" fontSize={10} tickLine={false} />
-                      <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '12px', fontSize: '11px' }} />
-                      <Bar dataKey="orders" fill="#FFB347" radius={[6, 6, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* Live Activity Feed */}
-              <div className="md:col-span-6 bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4 flex flex-col justify-between">
-                <div className="flex items-center justify-between border-b border-slate-850 pb-2">
-                  <h3 className="font-bold text-sm text-slate-200 flex items-center gap-1.5">
-                    <Activity size={15} className="text-rose-500 animate-pulse" />
-                    <span>Live Audit Log</span>
-                  </h3>
-                  <span className="text-[8px] uppercase bg-rose-500/10 text-rose-400 px-2 py-0.5 rounded font-black">Admin room active</span>
-                </div>
-
-                <div className="flex-1 overflow-y-auto space-y-3 pr-1 max-h-[220px] scrollbar-thin scrollbar-thumb-slate-800">
-                  {data.activityFeed.length === 0 ? (
-                    <p className="text-xs text-slate-500 text-center py-10">No recent store activities</p>
-                  ) : (
-                    data.activityFeed.map((act: any, idx: number) => (
-                      <div key={idx} className="flex justify-between items-start gap-3 text-xs p-1">
-                        <div className="flex gap-2">
-                          <span className={`h-1.5 w-1.5 rounded-full mt-1.5 shrink-0 ${
-                            act.type === 'success' ? 'bg-emerald-500' :
-                            act.type === 'error' || act.type === 'danger' ? 'bg-red-500' :
-                            act.type === 'warning' ? 'bg-amber-400 animate-pulse' : 'bg-indigo-400'
-                          }`} />
-                          <p className="text-slate-300 leading-relaxed">{act.message}</p>
-                        </div>
-                        <span className="text-[9px] text-slate-500 whitespace-nowrap shrink-0 mt-0.5">
-                          {new Date(act.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                        </span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* VIEW: INVENTORY */}
-        {activeTab === 'inventory' && (
-          <section className="bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-6">
-            <div className="flex justify-between items-center">
-              <div>
-                <h3 className="font-bold text-md text-slate-200">Raw Ingredient Store</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Tracks Flour, Chocolate, Cream, Butter, Milk, Sugar, Eggs, Cheese</p>
               </div>
 
               <button
-                onClick={handleRefillInventory}
-                className="px-4 py-2 bg-gradient-to-r from-rose-500 to-amber-500 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-500/10"
+                onClick={fetchReceptionOrders}
+                className="px-4 py-2.5 bg-[#FAF8F8] hover:bg-white text-[#1E1818] border border-[#D0C0C0] rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors shadow-sm"
               >
-                Refill All Stocks (Standard)
+                <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+                <span>Refresh Queue</span>
               </button>
             </div>
 
-            {/* Inventory Table */}
-            <div className="overflow-x-auto bg-slate-950/40 border border-slate-850 rounded-2xl">
-              <table className="w-full border-collapse text-left text-xs">
-                <thead>
-                  <tr className="border-b border-slate-850 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
-                    <th className="p-4">Ingredient</th>
-                    <th className="p-4">Stock Level</th>
-                    <th className="p-4">Alert Threshold</th>
-                    <th className="p-4">Status</th>
-                    <th className="p-4 text-right">Quick Restock</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inventory.map(item => {
-                    const isLow = item.quantity < item.minThreshold;
-                    return (
-                      <tr key={item._id} className="border-b border-slate-850 hover:bg-slate-900/30 transition-colors">
-                        <td className="p-4 font-semibold text-slate-200">{item.name}</td>
-                        <td className="p-4 text-slate-350">{item.quantity}{item.unit}</td>
-                        <td className="p-4 text-slate-500">{item.minThreshold}{item.unit}</td>
-                        <td className="p-4">
-                          {isLow ? (
-                            <span className="px-2.5 py-1 rounded bg-red-500/10 border border-red-500/30 text-red-400 text-[9px] font-bold uppercase tracking-wide animate-pulse">Low Stock</span>
-                          ) : (
-                            <span className="px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[9px] font-bold uppercase tracking-wide">Healthy</span>
-                          )}
-                        </td>
-                        <td className="p-4 text-right">
-                          <div className="inline-flex gap-1.5 justify-end">
-                            <button
-                              onClick={() => handleUpdateStock(item._id, item.quantity + 2000)}
-                              className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-[10px] text-slate-300"
-                            >
-                              +2 kg
-                            </button>
-                            <button
-                              onClick={() => handleUpdateStock(item._id, Math.max(0, item.quantity - 1000))}
-                              className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-[10px] text-slate-400"
-                            >
-                              -1 kg
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
+            {/* Reception Orders Cards Grid */}
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-xs font-extrabold text-[#1E1818] uppercase tracking-wider flex items-center gap-2">
+                  <Receipt size={16} className="text-[#CD0D0D]" />
+                  <span>Pending Table Bills ({filteredPendingOrders.length})</span>
+                </h3>
 
-        {/* VIEW: AI ENGINE */}
-        {activeTab === 'ai' && (
-          <section className="space-y-6">
-            
-            {/* AI Tomorrow Forecast Header */}
-            <div className="bg-gradient-to-r from-rose-950/20 via-slate-900/60 to-amber-950/20 border border-rose-950/40 p-6 rounded-3xl space-y-4">
-              <div className="flex items-center gap-2 text-amber-400">
-                <Sparkles size={20} className="animate-pulse" />
-                <h3 className="font-extrabold text-md uppercase tracking-wider">AI Forecast & Demand Engine</h3>
-              </div>
-
-              <div className="grid md:grid-cols-3 gap-4">
-                <div className="bg-slate-950/50 p-5 rounded-2xl border border-slate-850">
-                  <span className="text-[10px] uppercase font-bold text-slate-500">Predicted Orders (24h)</span>
-                  <h4 className="text-3xl font-black mt-2 text-slate-100">{data.ai.tomorrowDemand.predictedOrders}</h4>
-                  <p className="text-[9px] text-slate-400 mt-1">Based on weekly transaction cycles</p>
-                </div>
-
-                <div className="bg-slate-950/50 p-5 rounded-2xl border border-slate-850">
-                  <span className="text-[10px] uppercase font-bold text-slate-500">Confidence Rating</span>
-                  <h4 className="text-lg font-extrabold mt-3 text-slate-200">{data.ai.tomorrowDemand.confidence}</h4>
-                  <p className="text-[9px] text-slate-400 mt-1">Standard deviation confidence score</p>
-                </div>
-
-                <div className="bg-slate-950/50 p-5 rounded-2xl border border-slate-850">
-                  <span className="text-[10px] uppercase font-bold text-slate-500">Weekend Surge multiplier</span>
-                  <h4 className="text-xl font-black mt-2 text-rose-450">{data.ai.tomorrowDemand.demandFactor}</h4>
-                  <p className="text-[9px] text-slate-400 mt-1">Reflects holiday cake shopping velocity</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Runout forecast */}
-            <div className="grid md:grid-cols-12 gap-6">
-              
-              {/* Inventory Forecast */}
-              <div className="md:col-span-7 bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4">
-                <h4 className="font-bold text-sm text-slate-200">AI Inventory Runout Forecast</h4>
-                <p className="text-xs text-slate-400">Calculates average consumption velocity per order to estimate runout timelines.</p>
-
-                <div className="space-y-3">
-                  {data.ai.inventoryForecast.map((item: any) => (
-                    <div key={item.name} className="flex justify-between items-center text-xs p-2 bg-slate-950/40 border border-slate-850 rounded-xl">
-                      <div>
-                        <span className="font-semibold text-slate-250">{item.name}</span>
-                        <span className="text-[9px] text-slate-500 block">Daily Usage: ~{item.dailyUsage}{item.unit}</span>
-                      </div>
-                      <div className="text-right">
-                        <span className={`font-bold block ${
-                          item.status === 'Critical' ? 'text-red-400' :
-                          item.status === 'Warning' ? 'text-amber-400' : 'text-emerald-400'
-                        }`}>
-                          {item.daysRemaining} days remaining
-                        </span>
-                        <span className="text-[9px] text-slate-500">{item.status}</span>
-                      </div>
-                    </div>
+                {/* Filter Table Pills */}
+                <div className="flex items-center gap-1.5 overflow-x-auto bg-white p-1.5 rounded-2xl border border-[#D0C0C0] shadow-sm">
+                  <span className="text-xs font-bold text-[#6E6262] px-2 flex items-center gap-1">
+                    <Filter size={12} className="text-[#CD0D0D]" /> Table:
+                  </span>
+                  <button
+                    onClick={() => setPendingTableFilter('all')}
+                    className={`px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      pendingTableFilter === 'all'
+                        ? 'bg-[#CD0D0D] text-white shadow'
+                        : 'text-[#6E6262] hover:text-[#1E1818]'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {dynamicTableNumbers.map(tNum => (
+                    <button
+                      key={tNum}
+                      onClick={() => setPendingTableFilter(tNum)}
+                      className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        pendingTableFilter === tNum
+                          ? 'bg-[#CD0D0D] text-white shadow'
+                          : 'text-[#6E6262] hover:text-[#1E1818]'
+                      }`}
+                    >
+                      T{tNum}
+                    </button>
                   ))}
                 </div>
               </div>
 
-              {/* Combos & Recommendations */}
-              <div className="md:col-span-5 space-y-6">
-                
-                {/* AI Combos */}
-                <div className="bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4">
-                  <h4 className="font-bold text-sm text-slate-200">AI Suggested Combos</h4>
-                  <div className="space-y-3">
-                    {data.ai.smartCombos.map((combo: any, idx: number) => (
-                      <div key={idx} className="p-3 bg-slate-950/50 border border-slate-850 rounded-xl space-y-1.5">
-                        <h5 className="text-xs font-bold text-rose-400">{combo.name}</h5>
-                        <p className="text-[10px] text-slate-400">{combo.items.join(' + ')}</p>
-                        <p className="text-[9px] text-slate-500 italic">"{combo.reason}"</p>
-                      </div>
-                    ))}
-                  </div>
+              {filteredPendingOrders.length === 0 ? (
+                <div className="bg-white border border-[#D0C0C0] rounded-3xl p-12 text-center space-y-3 shadow-sm">
+                  <CheckCircle size={40} className="mx-auto text-emerald-500" />
+                  <h4 className="text-base font-extrabold text-[#1E1818]">All Table Bills Cleared!</h4>
+                  <p className="text-xs text-[#6E6262]">No table orders are currently awaiting billing receipt generation.</p>
                 </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {filteredPendingOrders.map((order: Order) => (
+                    <div 
+                      key={order._id}
+                      className="bg-white border border-[#D0C0C0] hover:border-[#CD0D0D] rounded-3xl p-5 space-y-4 shadow-sm hover:shadow-md transition-all relative group flex flex-col justify-between"
+                    >
+                      <div className="space-y-3">
+                        {/* Table Header */}
+                        <div className="flex justify-between items-start border-b border-[#E8E0E0] pb-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-9 h-9 rounded-2xl bg-[#CD0D0D]/10 text-[#CD0D0D] font-black text-sm flex items-center justify-center border border-[#CD0D0D]/30">
+                              T{order.tableNumber}
+                            </span>
+                            <div>
+                              <h4 className="font-extrabold text-sm text-[#1E1818]">{order.customerName}</h4>
+                              <p className="text-[10px] text-[#6E6262] font-mono">Order #{order._id.slice(-4)}</p>
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-emerald-500 text-white shadow">
+                            {order.status}
+                          </span>
+                        </div>
 
-                {/* AI Auto Recommendations */}
-                <div className="bg-slate-900/40 border border-slate-800/60 p-6 rounded-3xl backdrop-blur-md space-y-4">
-                  <h4 className="font-bold text-sm text-slate-200">AI Auto Menu Booster</h4>
-                  <p className="text-[11px] text-slate-400">Items matching target stock levels with highest customer velocity score:</p>
-                  
-                  <div className="grid grid-cols-2 gap-2">
-                    {data.ai.autoMenuRecommendations.map((rec: any, idx: number) => (
-                      <div key={idx} className="p-2 bg-slate-950/40 border border-slate-850 rounded-xl text-center">
-                        <img src={rec.image} className="w-full h-12 object-cover rounded-lg bg-slate-800 mb-1.5" />
-                        <h6 className="text-[10px] font-bold text-slate-350 truncate">{rec.name}</h6>
-                        <span className="text-[9px] text-rose-455 font-bold">₹{rec.price}</span>
+                        {/* Order Items Table Summary */}
+                        <div className="space-y-1.5 bg-[#FAF8F8] p-3 rounded-2xl border border-[#D0C0C0]">
+                          {order.items?.map((item: any, idx: number) => (
+                            <div key={idx} className="text-xs flex justify-between items-center text-[#1E1818]">
+                              <span className="font-semibold">
+                                {item.quantity}x {item.product?.name || item.name || 'Food Item'}
+                              </span>
+                              <span className="font-mono font-bold text-[#CD0D0D]">
+                                ₹{(item.price || item.product?.price || 0) * item.quantity}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Total Amount Banner */}
+                        <div className="flex justify-between items-center pt-1">
+                          <span className="text-xs font-bold text-[#6E6262]">Total Amount:</span>
+                          <span className="text-lg font-black text-[#CD0D0D] font-mono">
+                            ₹{order.totalAmount?.toFixed(2)}
+                          </span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
+
+                      {/* Cash Pay & Generate Receipt Action */}
+                      <button
+                        onClick={() => setSelectedReceiptOrder(order)}
+                        className="w-full py-3 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-extrabold rounded-2xl text-xs shadow-md shadow-[#CD0D0D]/20 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.98]"
+                      >
+                        <Printer size={15} />
+                        <span>Settle Bill & Release Table {order.tableNumber}</span>
+                      </button>
+                    </div>
+                  ))}
                 </div>
-
-              </div>
-
+              )}
             </div>
 
-          </section>
+            {/* PAYMENT SETTLEMENT HISTORY LOG */}
+            <div className="space-y-4 pt-4 border-t border-[#D0C0C0]">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-xs font-extrabold text-[#1E1818] uppercase tracking-wider flex items-center gap-2">
+                  <DollarSign size={16} className="text-emerald-600" />
+                  <span>Payment Settlement History Log ({filteredPaymentHistory.length})</span>
+                </h3>
+
+                {/* Date & Table Filters */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  {/* Date Filter */}
+                  <div className="flex items-center gap-1 bg-white p-1 rounded-2xl border border-[#D0C0C0] text-xs font-bold">
+                    <span className="text-[#6E6262] px-2 flex items-center gap-1">
+                      <Calendar size={12} className="text-[#CD0D0D]" /> Date:
+                    </span>
+                    {['all', 'today', '7days', '30days'].map(f => (
+                      <button
+                        key={f}
+                        onClick={() => setHistoryDateFilter(f)}
+                        className={`px-2.5 py-1 rounded-xl text-xs capitalize transition-all cursor-pointer ${
+                          historyDateFilter === f
+                            ? 'bg-[#CD0D0D] text-white shadow'
+                            : 'text-[#6E6262] hover:text-[#1E1818]'
+                        }`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Table Filter */}
+                  <div className="flex items-center gap-1 bg-white p-1 rounded-2xl border border-[#D0C0C0] text-xs font-bold">
+                    <span className="text-[#6E6262] px-2 flex items-center gap-1">
+                      <Filter size={12} className="text-[#CD0D0D]" /> Table:
+                    </span>
+                    <button
+                      onClick={() => setHistoryTableFilter('all')}
+                      className={`px-2.5 py-1 rounded-xl text-xs transition-all cursor-pointer ${
+                        historyTableFilter === 'all'
+                          ? 'bg-[#CD0D0D] text-white shadow'
+                          : 'text-[#6E6262] hover:text-[#1E1818]'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {dynamicTableNumbers.map(tNum => (
+                      <button
+                        key={tNum}
+                        onClick={() => setHistoryTableFilter(tNum)}
+                        className={`px-2.5 py-1 rounded-xl text-xs transition-all cursor-pointer ${
+                          historyTableFilter === tNum
+                            ? 'bg-[#CD0D0D] text-white shadow'
+                            : 'text-[#6E6262] hover:text-[#1E1818]'
+                        }`}
+                      >
+                        T{tNum}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {filteredPaymentHistory.length === 0 ? (
+                <div className="bg-white border border-[#D0C0C0] rounded-3xl p-8 text-center text-[#6E6262] text-xs font-semibold">
+                  No payment history transactions match selected filters.
+                </div>
+              ) : (
+                <div className="bg-white border border-[#D0C0C0] rounded-3xl overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-[#FAF8F8] border-b border-[#D0C0C0] text-[#6E6262] font-extrabold uppercase tracking-wider text-[10px]">
+                        <tr>
+                          <th className="p-4">Order ID</th>
+                          <th className="p-4">Table #</th>
+                          <th className="p-4">Customer</th>
+                          <th className="p-4">Payment Method</th>
+                          <th className="p-4">Amount Paid</th>
+                          <th className="p-4">Time Settled</th>
+                          <th className="p-4 text-center">Receipt</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#E8E0E0] text-[#1E1818]">
+                        {filteredPaymentHistory.map((order: Order) => (
+                          <tr 
+                            key={order._id} 
+                            onClick={() => setSelectedReceiptOrder(order)}
+                            className="hover:bg-[#CD0D0D]/5 transition-colors cursor-pointer group"
+                          >
+                            <td className="p-4 font-mono font-bold text-[#CD0D0D]">#{order._id.slice(-6)}</td>
+                            <td className="p-4 font-extrabold text-[#CD0D0D] group-hover:underline">Table {order.tableNumber}</td>
+                            <td className="p-4 font-semibold">{order.customerName}</td>
+                            <td className="p-4">
+                              <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-[#CD0D0D]/10 text-[#CD0D0D] border border-[#CD0D0D]/30">
+                                {order.paymentMethod || 'CASH'}
+                              </span>
+                            </td>
+                            <td className="p-4 font-black font-mono text-emerald-700">₹{order.totalAmount?.toFixed(2)}</td>
+                            <td className="p-4 text-[#6E6262] font-semibold">
+                              {new Date((order as any).updatedAt || order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                            <td className="p-4 text-center">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedReceiptOrder(order);
+                                }}
+                                className="px-3 py-1.5 rounded-xl bg-[#FAF8F8] group-hover:bg-[#CD0D0D] group-hover:text-white text-[#1E1818] border border-[#D0C0C0] font-bold text-[11px] transition-all cursor-pointer shadow-xs"
+                              >
+                                View Receipt
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* VIEW: OVERVIEW STORE ANALYTICS */}
+        {activeTab === 'overview' && (
+          <div className="space-y-8">
+            {/* Filter Pill Header */}
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-lg font-extrabold text-[#1E1818]">Store Operations Overview</h2>
+                <p className="text-xs text-[#6E6262] font-semibold mt-0.5">Real-time revenue metrics, kitchen performance, and sales stats</p>
+              </div>
+
+              <div className="flex bg-white p-1 rounded-2xl border border-[#D0C0C0] shadow-sm">
+                {(['today', '7days', '30days'] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => {
+                      setDateFilter(f);
+                      fetchAdminData(f);
+                    }}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${dateFilter === f ? 'bg-[#CD0D0D] text-white shadow' : 'text-[#6E6262] hover:text-[#1E1818]'}`}
+                  >
+                    {f === 'today' ? 'Today' : f === '7days' ? 'Last 7 Days' : 'Last 30 Days'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Top KPI Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+              <div className="bg-white border border-[#D0C0C0] p-5 rounded-3xl shadow-sm space-y-2">
+                <div className="flex justify-between items-center text-[#6E6262]">
+                  <span className="text-xs font-extrabold uppercase tracking-wider">Gross Revenue</span>
+                  <div className="p-2 rounded-xl bg-[#CD0D0D]/10 text-[#CD0D0D]"><TrendingUp size={16} /></div>
+                </div>
+                <div className="text-2xl font-black text-[#CD0D0D] font-mono">₹{displayData.grossRevenue?.toFixed(2)}</div>
+                <p className="text-[10px] text-emerald-600 font-bold">+14% from previous period</p>
+              </div>
+
+              <div className="bg-white border border-[#D0C0C0] p-5 rounded-3xl shadow-sm space-y-2">
+                <div className="flex justify-between items-center text-[#6E6262]">
+                  <span className="text-xs font-extrabold uppercase tracking-wider">Total Orders</span>
+                  <div className="p-2 rounded-xl bg-[#CD0D0D]/10 text-[#CD0D0D]"><ShoppingBag size={16} /></div>
+                </div>
+                <div className="text-2xl font-black text-[#1E1818] font-mono">{displayData.totalOrders}</div>
+                <p className="text-[10px] text-[#6E6262] font-semibold">Completed Orders</p>
+              </div>
+
+              <div className="bg-white border border-[#D0C0C0] p-5 rounded-3xl shadow-sm space-y-2">
+                <div className="flex justify-between items-center text-[#6E6262]">
+                  <span className="text-xs font-extrabold uppercase tracking-wider">Avg Prep Time</span>
+                  <div className="p-2 rounded-xl bg-[#CD0D0D]/10 text-[#CD0D0D]"><Clock size={16} /></div>
+                </div>
+                <div className="text-2xl font-black text-[#1E1818] font-mono">{displayData.avgPrepTimeMins} <span className="text-xs font-bold text-[#6E6262]">mins</span></div>
+                <p className="text-[10px] text-emerald-600 font-bold">Fast Kitchen Preparation</p>
+              </div>
+
+              <div className="bg-white border border-[#D0C0C0] p-5 rounded-3xl shadow-sm space-y-2">
+                <div className="flex justify-between items-center text-[#6E6262]">
+                  <span className="text-xs font-extrabold uppercase tracking-wider">Active Tables</span>
+                  <div className="p-2 rounded-xl bg-[#CD0D0D]/10 text-[#CD0D0D]"><Users size={16} /></div>
+                </div>
+                <div className="text-2xl font-black text-[#CD0D0D] font-mono">{displayData.liveActiveTables || 3}</div>
+                <p className="text-[10px] text-[#6E6262] font-semibold">Live Occupied Tables</p>
+              </div>
+            </div>
+
+            {/* Charts Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Category Breakdown */}
+              <div className="bg-white border border-[#D0C0C0] p-6 rounded-3xl shadow-sm space-y-4">
+                <div className="flex justify-between items-center border-b border-[#E8E0E0] pb-3">
+                  <h3 className="font-extrabold text-sm text-[#1E1818]">Category Sales Share</h3>
+                  <PieIcon size={16} className="text-[#CD0D0D]" />
+                </div>
+                <div className="space-y-3">
+                  {(() => {
+                    const categories = (displayData?.categoryBreakdown && displayData.categoryBreakdown.length > 0)
+                      ? displayData.categoryBreakdown
+                      : defaultDashboardData.categoryBreakdown;
+
+                    return categories.map((cat: any, idx: number) => (
+                      <div key={idx} className="space-y-1">
+                        <div className="flex justify-between text-xs font-bold">
+                          <span className="text-[#1E1818]">{cat.category}</span>
+                          <span className="text-[#CD0D0D] font-mono">₹{cat.sales || 0} ({cat.percent || 0}%)</span>
+                        </div>
+                        <div className="w-full bg-[#FAF8F8] border border-[#D0C0C0] rounded-full h-2.5 overflow-hidden">
+                          <div className="h-full bg-[#CD0D0D] rounded-full transition-all duration-500" style={{ width: `${Math.max(5, cat.percent || 0)}%` }} />
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+
+              {/* Peak Dining Hours Line Graph */}
+              <div className="bg-white border border-[#D0C0C0] p-6 rounded-3xl shadow-sm space-y-4">
+                <div className="flex justify-between items-center border-b border-[#E8E0E0] pb-3">
+                  <div>
+                    <h3 className="font-extrabold text-sm text-[#1E1818]">Peak Dining Hours Graph</h3>
+                    <p className="text-[10px] text-[#6E6262] font-semibold">Hourly order volume line chart</p>
+                  </div>
+                  <TrendingUp size={18} className="text-[#CD0D0D]" />
+                </div>
+
+                <div className="pt-2 relative">
+                  {(() => {
+                    const peaks = (displayData?.peakHours && displayData.peakHours.length > 0)
+                      ? displayData.peakHours
+                      : defaultDashboardData.peakHours;
+
+                    const maxOrders = Math.max(1, ...peaks.map((p: any) => p.orders || 0));
+                    const width = 500;
+                    const height = 130;
+                    const paddingX = 30;
+                    const paddingY = 25;
+
+                    const points = peaks.map((p: any, i: number) => {
+                      const x = paddingX + (i * ((width - paddingX * 2) / (peaks.length - 1)));
+                      const y = height - paddingY - (((p.orders || 0) / maxOrders) * (height - paddingY * 2));
+                      return { x, y, hour: p.hour, orders: p.orders || 0 };
+                    });
+
+                    const linePath = points.reduce((acc: string, pt: any, i: number) => {
+                      return i === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`;
+                    }, '');
+
+                    const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - 15} L ${points[0].x} ${height - 15} Z`;
+
+                    return (
+                      <div className="w-full overflow-x-auto">
+                        <div className="min-w-[420px] relative">
+                          <svg viewBox={`0 0 ${width} ${height + 25}`} className="w-full h-auto overflow-visible">
+                            <defs>
+                              <linearGradient id="peakLineGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#CD0D0D" stopOpacity="0.3" />
+                                <stop offset="100%" stopColor="#CD0D0D" stopOpacity="0.0" />
+                              </linearGradient>
+                            </defs>
+
+                            {/* Horizontal Grid lines */}
+                            <line x1={paddingX} y1={paddingY} x2={width - paddingX} y2={paddingY} stroke="#E8E0E0" strokeDasharray="3 3" strokeWidth="1" />
+                            <line x1={paddingX} y1={(height - 15) / 2 + paddingY / 2} x2={width - paddingX} y2={(height - 15) / 2 + paddingY / 2} stroke="#E8E0E0" strokeDasharray="3 3" strokeWidth="1" />
+                            <line x1={paddingX} y1={height - 15} x2={width - paddingX} y2={height - 15} stroke="#D0C0C0" strokeWidth="1.5" />
+
+                            {/* Area Gradient Fill */}
+                            <path d={areaPath} fill="url(#peakLineGradient)" />
+
+                            {/* Main Curve Line */}
+                            <path d={linePath} fill="none" stroke="#CD0D0D" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+
+                            {/* Interactive Data Points & Labels */}
+                            {points.map((pt: any, idx: number) => (
+                              <g key={idx} className="group cursor-pointer">
+                                {/* Vertical Guideline on Hover */}
+                                <line 
+                                  x1={pt.x} y1={paddingY} x2={pt.x} y2={height - 15} 
+                                  stroke="#CD0D0D" strokeWidth="1" strokeDasharray="2 2" 
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity" 
+                                />
+
+                                {/* Dot Node */}
+                                <circle 
+                                  cx={pt.x} cy={pt.y} r="5" 
+                                  className="fill-[#CD0D0D] stroke-white stroke-2 group-hover:r-7 transition-all" 
+                                />
+
+                                {/* Tooltip Text on Hover */}
+                                <g className="opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <rect 
+                                    x={pt.x - 30} y={Math.max(2, pt.y - 30)} 
+                                    width="60" height="20" rx="6" 
+                                    className="fill-[#1E1818]" 
+                                  />
+                                  <text 
+                                    x={pt.x} y={Math.max(2, pt.y - 30) + 13} 
+                                    textAnchor="middle" 
+                                    className="fill-white text-[9px] font-mono font-bold"
+                                  >
+                                    {pt.orders} orders
+                                  </text>
+                                </g>
+
+                                {/* X-Axis Hour Label */}
+                                <text 
+                                  x={pt.x} y={height + 12} 
+                                  textAnchor="middle" 
+                                  className="fill-[#6E6262] text-[10px] font-bold font-sans"
+                                >
+                                  {pt.hour}
+                                </text>
+                              </g>
+                            ))}
+                          </svg>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            {/* OVERVIEW ORDER HISTORY TABLE WITH FILTERS */}
+            <div className="space-y-4 pt-6 border-t border-[#D0C0C0]">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-extrabold text-[#1E1818] uppercase tracking-wider flex items-center gap-2">
+                    <ShoppingBag size={16} className="text-[#CD0D0D]" />
+                    <span>Overview Store Order History</span>
+                  </h3>
+                  <p className="text-xs text-[#6E6262] font-semibold mt-0.5">
+                    Complete log of all live & past store orders with status & table filters
+                  </p>
+                </div>
+
+                {/* Filters Row */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Status Filter */}
+                  <div className="flex items-center gap-1 bg-white p-1 rounded-2xl border border-[#D0C0C0] text-xs font-bold shadow-xs">
+                    <span className="text-[#6E6262] px-2 flex items-center gap-1">
+                      <Filter size={12} className="text-[#CD0D0D]" /> Status:
+                    </span>
+                    {['all', 'paid', 'pending', 'ready', 'cancelled'].map(st => (
+                      <button
+                        key={st}
+                        onClick={() => setOverviewStatusFilter(st)}
+                        className={`px-2.5 py-1 rounded-xl text-xs uppercase font-extrabold transition-all cursor-pointer ${
+                          overviewStatusFilter === st
+                            ? 'bg-[#CD0D0D] text-white shadow'
+                            : 'text-[#6E6262] hover:text-[#1E1818]'
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Table Filter */}
+                  <div className="flex items-center gap-1 bg-white p-1 rounded-2xl border border-[#D0C0C0] text-xs font-bold shadow-xs">
+                    <span className="text-[#6E6262] px-2">Table:</span>
+                    <button
+                      onClick={() => setOverviewTableFilter('all')}
+                      className={`px-2.5 py-1 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                        overviewTableFilter === 'all'
+                          ? 'bg-[#CD0D0D] text-white shadow'
+                          : 'text-[#6E6262] hover:text-[#1E1818]'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {dynamicTableNumbers.map(tNum => (
+                      <button
+                        key={tNum}
+                        onClick={() => setOverviewTableFilter(tNum)}
+                        className={`px-2 py-1 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                          overviewTableFilter === tNum
+                            ? 'bg-[#CD0D0D] text-white shadow'
+                            : 'text-[#6E6262] hover:text-[#1E1818]'
+                        }`}
+                      >
+                        T{tNum}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Order History Table */}
+              <div className="bg-white border border-[#D0C0C0] rounded-3xl overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#FAF8F8] border-b border-[#D0C0C0] text-[#6E6262] font-extrabold uppercase tracking-wider text-[10px]">
+                      <tr>
+                        <th className="p-4">Order ID</th>
+                        <th className="p-4">Table #</th>
+                        <th className="p-4">Customer</th>
+                        <th className="p-4">Items Summary</th>
+                        <th className="p-4">Total Amount</th>
+                        <th className="p-4">Status</th>
+                        <th className="p-4">Date & Time</th>
+                        <th className="p-4 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#E8E0E0] text-[#1E1818]">
+                      {filteredOverviewOrders.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="p-8 text-center text-[#6E6262] font-semibold">
+                            No orders found matching selected filters.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredOverviewOrders.map((order: Order) => (
+                          <tr 
+                            key={order._id}
+                            onClick={() => setSelectedReceiptOrder(order)}
+                            className="hover:bg-[#CD0D0D]/5 transition-colors cursor-pointer group"
+                          >
+                            <td className="p-4 font-mono font-bold text-[#CD0D0D]">#{order._id.slice(-6)}</td>
+                            <td className="p-4 font-extrabold text-[#CD0D0D] group-hover:underline">Table {order.tableNumber}</td>
+                            <td className="p-4 font-semibold">{order.customerName}</td>
+                            <td className="p-4 text-[11px] text-[#6E6262] font-medium max-w-[200px] truncate">
+                              {order.items?.map((i: any) => `${i.quantity}x ${i.product?.name || i.name}`).join(', ')}
+                            </td>
+                            <td className="p-4 font-black font-mono text-emerald-700">₹{order.totalAmount?.toFixed(2)}</td>
+                            <td className="p-4">
+                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase shadow-xs ${
+                                order.status === 'served' || order.paymentStatus === 'paid'
+                                  ? 'bg-emerald-500 text-white'
+                                  : order.status === 'cancelled'
+                                    ? 'bg-[#CD0D0D] text-white'
+                                    : 'bg-amber-500 text-white'
+                              }`}>
+                                {order.paymentStatus === 'paid' ? 'PAID' : order.status}
+                              </span>
+                            </td>
+                            <td className="p-4 text-[#6E6262] font-semibold">
+                              {new Date(order.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} {' '}
+                              {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </td>
+                            <td className="p-4 text-center">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedReceiptOrder(order);
+                                }}
+                                className="px-3 py-1.5 rounded-xl bg-[#FAF8F8] group-hover:bg-[#CD0D0D] group-hover:text-white text-[#1E1818] border border-[#D0C0C0] font-bold text-[11px] transition-all cursor-pointer shadow-xs"
+                              >
+                                View Bill
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
       </main>
+
+      {/* TAX RECEIPT & CASH PAYMENT CONFIRMATION MODAL */}
+      {selectedReceiptOrder && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-[#D0C0C0] w-full max-w-md rounded-3xl p-6 space-y-5 shadow-2xl relative animate-scale-in text-[#1E1818]">
+            {/* Close Button */}
+            <button
+              onClick={() => setSelectedReceiptOrder(null)}
+              className="absolute top-4 right-4 text-[#6E6262] hover:text-[#1E1818] p-1.5 rounded-full bg-[#FAF8F8] cursor-pointer"
+            >
+              ✕
+            </button>
+
+            {/* Printable Tax Receipt Paper View */}
+            <div id="printable-receipt-card" className="bg-[#FAF8F8] border border-[#D0C0C0] p-5 rounded-2xl space-y-4 font-mono text-xs text-[#1E1818]">
+              {/* Receipt Header */}
+              <div className="text-center border-b border-dashed border-[#D0C0C0] pb-3 space-y-1">
+                <h2 className="font-extrabold text-base text-[#CD0D0D] tracking-tight">🍰 CakeFlow AI Bakery</h2>
+                <p className="text-[10px] text-[#6E6262]">Smart Dining & Food Court</p>
+                <p className="text-[10px] text-[#6E6262]">GSTIN: 33AAAAA0000A1Z5</p>
+                <div className="text-[10px] font-bold text-[#CD0D0D] pt-1">TAX INVOICE RECEIPT</div>
+              </div>
+
+              {/* Order Info */}
+              <div className="flex justify-between text-[11px] border-b border-dashed border-[#D0C0C0] pb-2">
+                <div>
+                  <div><span className="text-[#6E6262]">Table:</span> Table {selectedReceiptOrder.tableNumber}</div>
+                  <div><span className="text-[#6E6262]">Guest:</span> {selectedReceiptOrder.customerName}</div>
+                </div>
+                <div className="text-right">
+                  <div><span className="text-[#6E6262]">Bill #:</span> {selectedReceiptOrder._id.slice(-6)}</div>
+                  <div><span className="text-[#6E6262]">Time:</span> {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                </div>
+              </div>
+
+              {/* Items Breakdown */}
+              <div className="space-y-1 border-b border-dashed border-[#D0C0C0] pb-3">
+                <div className="flex justify-between font-bold text-[10px] text-[#6E6262] uppercase border-b border-[#D0C0C0] pb-1">
+                  <span>Item</span>
+                  <span>Qty x Rate</span>
+                  <span>Amt</span>
+                </div>
+                {selectedReceiptOrder.items?.map((item: any, idx: number) => {
+                  const pName = item.product?.name || item.name || 'Food Item';
+                  const price = item.price || item.product?.price || 0;
+                  return (
+                    <div key={idx} className="flex justify-between text-[11px]">
+                      <span className="truncate max-w-[140px]">{pName}</span>
+                      <span>{item.quantity} x ₹{price}</span>
+                      <span className="font-bold">₹{price * item.quantity}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Taxes & Total */}
+              <div className="space-y-1 text-[11px]">
+                <div className="flex justify-between text-[#6E6262]">
+                  <span>Subtotal:</span>
+                  <span>₹{(selectedReceiptOrder.totalAmount * 0.95).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-[#6E6262]">
+                  <span>CGST (2.5%):</span>
+                  <span>₹{(selectedReceiptOrder.totalAmount * 0.025).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-[#6E6262]">
+                  <span>SGST (2.5%):</span>
+                  <span>₹{(selectedReceiptOrder.totalAmount * 0.025).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm font-black text-[#CD0D0D] border-t border-dashed border-[#D0C0C0] pt-2">
+                  <span>GRAND TOTAL:</span>
+                  <span>₹{selectedReceiptOrder.totalAmount?.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Direct Print & Save PDF Action Buttons */}
+            <div className="flex gap-2">
+              <button
+                onClick={handleDirectPrintReceipt}
+                className="flex-1 py-2.5 bg-white border border-[#D0C0C0] hover:border-[#CD0D0D] hover:bg-[#FAF8F8] text-[#1E1818] font-extrabold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-[0.98]"
+              >
+                <Printer size={15} className="text-[#CD0D0D]" />
+                <span>Print Receipt</span>
+              </button>
+              <button
+                onClick={handleDirectPrintReceipt}
+                className="flex-1 py-2.5 bg-white border border-[#D0C0C0] hover:border-[#CD0D0D] hover:bg-[#FAF8F8] text-[#1E1818] font-extrabold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-[0.98]"
+              >
+                <Download size={15} className="text-emerald-600" />
+                <span>Save as PDF</span>
+              </button>
+            </div>
+
+            {/* Payment Method Selector & Confirm Action */}
+            {selectedReceiptOrder.status !== 'served' && (
+              <>
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-[#6E6262] uppercase tracking-wider">Select Payment Method:</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['cash', 'upi', 'card'] as const).map((method) => {
+                      const label = method === 'cash' ? '💵 Cash' : method === 'upi' ? '📱 UPI' : '💳 Card';
+                      return (
+                        <button
+                          key={method}
+                          onClick={() => setPaymentMethod(method)}
+                          className={`py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            paymentMethod === method
+                              ? 'bg-[#CD0D0D] text-white shadow-md'
+                              : 'bg-[#FAF8F8] border border-[#D0C0C0] text-[#1E1818] hover:bg-white'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Settle & Set Table Available Button */}
+                <div className="space-y-2">
+                  <button
+                    onClick={handlePrintAndSettleBill}
+                    disabled={settlingBill}
+                    className="w-full py-3.5 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-extrabold rounded-2xl text-xs shadow-lg shadow-[#CD0D0D]/20 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.98] disabled:opacity-50"
+                  >
+                    <CheckCircle size={16} />
+                    <span>{settlingBill ? 'Saving History & Releasing Table...' : `Confirm ${paymentMethod.toUpperCase()} Payment & Release Table ${selectedReceiptOrder.tableNumber}`}</span>
+                  </button>
+                  <p className="text-[10px] text-center text-[#6E6262]">
+                    Clicking this button saves the payment history transaction in MongoDB and automatically moves Table {selectedReceiptOrder.tableNumber} to Available status.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

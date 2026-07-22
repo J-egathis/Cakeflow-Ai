@@ -14,15 +14,46 @@ router.get('/', auth(['admin', 'cake_chef', 'snacks_chef']), async (req, res) =>
   }
 });
 
+// Create new inventory item (Admin only)
+router.post('/', auth(['admin']), async (req, res) => {
+  try {
+    const { name, quantity, unit, minThreshold } = req.body;
+    if (!name || quantity === undefined) {
+      return res.status(400).json({ message: 'Name and quantity are required' });
+    }
+
+    const existing = await Inventory.findOne({ name });
+    if (existing) {
+      return res.status(400).json({ message: `Ingredient '${name}' already exists in inventory!` });
+    }
+
+    const newItem = new Inventory({
+      name,
+      quantity: Number(quantity),
+      unit: unit || 'g',
+      minThreshold: Number(minThreshold) || 1000,
+      lastUpdated: Date.now()
+    });
+
+    await newItem.save();
+    notifyInventoryUpdate(newItem);
+
+    res.status(201).json(newItem);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
 // Update specific inventory item quantity (Admin or Chefs)
 router.put('/:id', auth(['admin', 'cake_chef', 'snacks_chef']), async (req, res) => {
-  const { quantity } = req.body;
+  const { quantity, minThreshold } = req.body;
 
   try {
     const item = await Inventory.findById(req.params.id);
     if (!item) return res.status(404).json({ message: 'Ingredient not found' });
 
-    item.quantity = quantity;
+    if (quantity !== undefined) item.quantity = quantity;
+    if (minThreshold !== undefined) item.minThreshold = minThreshold;
     item.lastUpdated = Date.now();
     await item.save();
 

@@ -1,7 +1,9 @@
 export interface Product {
   _id: string;
   name: string;
-  category: 'Birthday Cakes' | 'Wedding Cakes' | 'Cup Cakes' | 'Pastries' | 'Brownies' | 'Cookies' | 'Veg Snacks' | 'Non-Veg Snacks' | 'Hot Drinks' | 'Cold Drinks' | 'Combos';
+  category: string;
+  description?: string;
+  ingredients?: string;
   price: number;
   image: string;
   estimatedPrepTime: number;

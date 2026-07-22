@@ -3,6 +3,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const os = require('os');
 require('dotenv').config();
 
 const connectDB = require('./src/config/db');
@@ -43,6 +44,28 @@ app.use('/api/orders', require('./src/routes/orders'));
 app.use('/api/inventory', require('./src/routes/inventory'));
 app.use('/api/analytics', require('./src/routes/analytics'));
 app.use('/api/tables', require('./src/routes/tables'));
+
+// Auto-detect LAN IP for QR code generation (WiFi/Ethernet)
+app.get('/api/system/lan-ip', (req, res) => {
+  try {
+    const ifaces = os.networkInterfaces();
+    let lanIp = null;
+    for (const ifaceName of Object.keys(ifaces)) {
+      for (const iface of ifaces[ifaceName]) {
+        // Pick first non-internal IPv4 (WiFi/Ethernet)
+        if (iface.family === 'IPv4' && !iface.internal) {
+          lanIp = iface.address;
+          break;
+        }
+      }
+      if (lanIp) break;
+    }
+    const clientPort = process.env.CLIENT_PORT || 5173;
+    res.json({ ip: lanIp, url: lanIp ? `http://${lanIp}:${clientPort}` : null });
+  } catch (err) {
+    res.json({ ip: null, url: null });
+  }
+});
 
 // Fallback to React index.html for SPA routing in client
 app.get('*', (req, res) => {

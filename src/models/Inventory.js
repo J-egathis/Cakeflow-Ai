@@ -4,16 +4,15 @@ const InventorySchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
-    unique: true,
-    enum: ['Flour', 'Chocolate', 'Cream', 'Milk', 'Sugar', 'Eggs', 'Butter', 'Cheese']
+    unique: true
   },
   quantity: {
-    type: Number, // in grams or pieces
+    type: Number, // in grams, ml, or units
     required: true,
     default: 10000
   },
   unit: {
-    type: String, // g, ml, units
+    type: String, // g, ml, units, kg
     required: true,
     default: 'g'
   },

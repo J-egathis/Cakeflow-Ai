@@ -8,31 +8,26 @@ const ProductSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    required: true,
-    enum: [
-      'Birthday Cakes',
-      'Wedding Cakes',
-      'Cup Cakes',
-      'Pastries',
-      'Brownies',
-      'Cookies',
-      'Veg Snacks',
-      'Non-Veg Snacks',
-      'Hot Drinks',
-      'Cold Drinks',
-      'Combos'
-    ]
+    required: true
+  },
+  description: {
+    type: String,
+    default: ''
+  },
+  ingredients: {
+    type: String,
+    default: ''
   },
   price: {
     type: Number,
     required: true
   },
   image: {
-    type: String, // Base64 or Image URL
+    type: String,
     required: true
   },
   estimatedPrepTime: {
-    type: Number, // in minutes
+    type: Number,
     default: 15
   },
   isBestseller: {

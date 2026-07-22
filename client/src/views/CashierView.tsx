@@ -115,8 +115,9 @@ ITEMS:
 `;
 
     selectedOrder.items.forEach(item => {
-      const price = item.product.isOffer && item.product.discountPrice ? item.product.discountPrice : item.product.price;
-      receiptContent += `${item.product.name.padEnd(25)} x${item.quantity}   ₹${price * item.quantity}\n`;
+      const price = item.product?.isOffer && item.product?.discountPrice ? item.product.discountPrice : (item.product?.price || 0);
+      const name = item.product?.name || 'Item';
+      receiptContent += `${name.padEnd(25)} x${item.quantity}   ₹${price * item.quantity}\n`;
     });
 
     receiptContent += `
@@ -248,11 +249,11 @@ Thank you! Visit again.
                 {/* Items List */}
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                   {selectedOrder.items.map(item => {
-                    const price = item.product.isOffer && item.product.discountPrice ? item.product.discountPrice : item.product.price;
+                    const price = item.product?.isOffer && item.product?.discountPrice ? item.product.discountPrice : (item.product?.price || 0);
                     return (
                       <div key={item._id} className="flex justify-between items-center text-xs">
                         <div>
-                          <p className="font-semibold text-slate-250">{item.product?.name}</p>
+                          <p className="font-semibold text-slate-250">{item.product?.name || 'Item'}</p>
                           <p className="text-[9px] text-slate-500">₹{price} x {item.quantity}</p>
                         </div>
                         <span className="font-bold text-slate-200">₹{price * item.quantity}</span>

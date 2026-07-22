@@ -1,34 +1,60 @@
 import { io, Socket } from 'socket.io-client';
 
 // Determine Backend URL dynamically
+// - On Render production: use Render origin
+// - On phone via LAN (192.168.x.x:5173): use window.location.origin so Vite proxy forwards /api → localhost:5000
+// - On localhost dev: use localhost:5000 directly
 const RENDER_BACKEND_URL = 'https://cakeflow-ai-1.onrender.com';
 export const BASE_URL = import.meta.env.VITE_BACKEND_URL || (
-  window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:5000'
-    : (window.location.origin.includes('onrender.com') ? window.location.origin : RENDER_BACKEND_URL)
+  window.location.origin.includes('onrender.com')
+    ? window.location.origin
+    : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        ? 'http://localhost:5001'
+        : window.location.origin)   // LAN IP (e.g. 192.168.x.x:5173) — Vite proxies /api & /socket.io
 );
 export const API_URL = `${BASE_URL}/api`;
 
-// Fetch wrapper with JWT injection
+// Fetch wrapper with JWT injection & retry resilience
 const request = async (endpoint: string, options: RequestInit = {}) => {
   const token = localStorage.getItem('cakeflow_token');
   const headers = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...options.headers
+    ...(options.headers || {})
   };
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
-    ...options,
-    headers
-  });
+  try {
+    const response = await fetch(`${API_URL}${endpoint}`, {
+      ...options,
+      headers
+    });
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || `Request failed with status ${response.status}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `Request failed with status ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (err: any) {
+    if (err.name === 'TypeError' || err.message?.includes('Failed to fetch')) {
+      // Retry once after 600ms if server was momentarily restarting
+      await new Promise(r => setTimeout(r, 600));
+      try {
+        const retryResponse = await fetch(`${API_URL}${endpoint}`, {
+          ...options,
+          headers
+        });
+        if (!retryResponse.ok) {
+          const errorData = await retryResponse.json().catch(() => ({}));
+          throw new Error(errorData.message || `Request failed with status ${retryResponse.status}`);
+        }
+        return await retryResponse.json();
+      } catch (retryErr: any) {
+        throw new Error(retryErr.message || 'Network error, please check connection.');
+      }
+    }
+    throw err;
   }
-
-  return response.json();
 };
 
 // Authentication Services
@@ -47,8 +73,15 @@ export const authApi = {
     localStorage.removeItem('cakeflow_user');
   },
   getCurrentUser: () => {
-    const userStr = localStorage.getItem('cakeflow_user');
-    return userStr ? JSON.parse(userStr) : null;
+    try {
+      const userStr = localStorage.getItem('cakeflow_user');
+      return (userStr && userStr !== 'undefined') ? JSON.parse(userStr) : null;
+    } catch (e) {
+      console.error('Failed to parse cached user:', e);
+      localStorage.removeItem('cakeflow_user');
+      localStorage.removeItem('cakeflow_token');
+      return null;
+    }
   }
 };
 
@@ -103,9 +136,15 @@ export const orderApi = {
       body: JSON.stringify(updateData)
     });
   },
-  closeTable: (id: string) => {
+  closeTable: (id: string, paymentMethod?: string) => {
     return request(`/orders/${id}/close`, {
-      method: 'POST'
+      method: 'POST',
+      body: JSON.stringify({ paymentMethod })
+    });
+  },
+  remove: (id: string) => {
+    return request(`/orders/${id}`, {
+      method: 'DELETE'
     });
   }
 };
@@ -114,6 +153,12 @@ export const orderApi = {
 export const inventoryApi = {
   getAll: () => {
     return request('/inventory');
+  },
+  create: (itemData: { name: string; quantity: number; unit: string; minThreshold: number }) => {
+    return request('/inventory', {
+      method: 'POST',
+      body: JSON.stringify(itemData)
+    });
   },
   update: (id: string, quantity: number) => {
     return request(`/inventory/${id}`, {
@@ -130,8 +175,8 @@ export const inventoryApi = {
 
 // Analytics Services
 export const analyticsApi = {
-  getDashboard: () => {
-    return request('/analytics');
+  getDashboard: (dateFilter: string = 'today') => {
+    return request(`/analytics?dateFilter=${dateFilter}`);
   }
 };
 

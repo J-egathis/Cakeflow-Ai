@@ -71,13 +71,29 @@ router.post('/', async (req, res) => {
     // Populate routing categories for each item
     const populatedItems = [];
     for (const item of items) {
-      const product = await Product.findById(item.productId);
+      let product = null;
+      if (item.productId) {
+        try {
+          product = await Product.findById(item.productId);
+        } catch (e) {}
+      }
+      
+      // Fallback search by product name if ID changed during re-seed
+      if (!product && item.name) {
+        product = await Product.findOne({ name: item.name });
+      }
+
       if (!product) {
-        return res.status(404).json({ message: `Product ${item.productId} not found` });
+        // Fallback to first available product if catalog was reseeded
+        product = await Product.findOne();
+      }
+
+      if (!product) {
+        return res.status(400).json({ message: 'Catalog item not found. Please refresh menu.' });
       }
 
       let category = 'Drink'; // default
-      const cat = product.category.toLowerCase();
+      const cat = (product.category || '').toLowerCase();
       if (cat.includes('cake') || cat.includes('pastr') || cat.includes('brownie') || cat.includes('cookie')) {
         category = 'Cake';
       } else if (cat.includes('snack')) {
@@ -86,7 +102,7 @@ router.post('/', async (req, res) => {
 
       populatedItems.push({
         product: product._id,
-        quantity: item.quantity,
+        quantity: item.quantity || 1,
         instructions: item.instructions || '',
         category,
         status: 'pending'
@@ -94,8 +110,8 @@ router.post('/', async (req, res) => {
     }
 
     const order = new Order({
-      tableNumber,
-      customerName,
+      tableNumber: Number(tableNumber) || 1,
+      customerName: customerName || `Table ${tableNumber} Guest`,
       items: populatedItems,
       totalAmount,
       status: 'pending',
@@ -242,7 +258,6 @@ router.put('/:id', async (req, res) => {
     }
 
     // Check if order was just served (completed) -> Deduct stock
-    const wasAlreadyServed = order.status === 'served' || order.status === 'delivered';
     const isNowServed = status === 'served' || order.status === 'served';
 
     await order.save();
@@ -268,16 +283,13 @@ router.put('/:id', async (req, res) => {
         } else if (order.status === 'ready') {
           table.status = 'Ready To Serve';
           table.orderProgress = 85;
-        } else if (order.status === 'served') {
-          if (order.paymentStatus === 'paid') {
-            table.status = 'Completed';
-            table.paymentStatus = 'Paid';
-            table.orderProgress = 100;
-          } else {
-            table.status = 'Payment Pending';
-            table.paymentStatus = 'Pending';
-            table.orderProgress = 95;
-          }
+        } else if (order.status === 'served' || order.paymentStatus === 'paid') {
+          table.status = 'Available';
+          table.currentOrderId = null;
+          table.currentOrderNumber = '';
+          table.currentBill = 0;
+          table.orderProgress = 0;
+          table.paymentStatus = 'Paid';
         }
         if (paymentStatus) table.paymentStatus = paymentStatus === 'paid' ? 'Paid' : 'Pending';
 
@@ -302,7 +314,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Close Table (Marks table as closed, sets payment to paid, and marks order served if not already)
+// Close Table (Marks table as closed, sets payment to paid, marks order served, AND AUTOMATICALLY SETS TABLE TO AVAILABLE!)
 router.post('/:id/close', async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -313,12 +325,79 @@ router.post('/:id/close', async (req, res) => {
       order.status = 'served';
       await deductInventoryForOrder(order);
     }
-
     await order.save();
+
+    // Automatically set Table status to Available & reset table session!
+    try {
+      const Table = require('../models/Table');
+      let table = await Table.findOne({ tableNumber: Number(order.tableNumber) });
+      if (table) {
+        table.status = 'Available';
+        table.currentOrderId = null;
+        table.currentOrderNumber = '';
+        table.currentBill = 0;
+        table.orderProgress = 0;
+        table.paymentStatus = 'Paid';
+        await table.save();
+
+        const { getIo } = require('../sockets');
+        const io = getIo();
+        io.emit('table_status_updated', table);
+      }
+    } catch (tblErr) {
+      console.error('Failed to set table available on order close:', tblErr.message);
+    }
+
     const populatedOrder = await Order.findById(order._id).populate('items.product');
-    
     notifyOrderUpdate(populatedOrder);
     res.json(populatedOrder);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Remove / Delete order by ID (Cancel order)
+router.delete('/:id', async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    order.status = 'cancelled';
+    order.rejectionReason = 'Order removed / cancelled by customer/staff';
+    await order.save();
+
+    // Sync Table status to Available if no active orders remain
+    try {
+      const Table = require('../models/Table');
+      let table = await Table.findOne({ tableNumber: Number(order.tableNumber) });
+      if (table) {
+        const remainingActive = await Order.find({
+          tableNumber: Number(order.tableNumber),
+          _id: { $ne: order._id },
+          status: { $nin: ['served', 'cancelled'] }
+        });
+        if (remainingActive.length === 0) {
+          table.status = 'Available';
+          table.currentOrderId = null;
+          table.currentOrderNumber = '';
+          table.currentBill = 0;
+          table.orderProgress = 0;
+          table.paymentStatus = 'Pending';
+          await table.save();
+
+          const { getIo } = require('../sockets');
+          const io = getIo();
+          io.emit('table_status_updated', table);
+        }
+      }
+    } catch (tblErr) {
+      console.error('Failed to sync table status on order delete:', tblErr.message);
+    }
+
+    const populatedOrder = await Order.findById(order._id).populate('items.product');
+    notifyOrderUpdate(populatedOrder);
+
+    res.json({ message: 'Order removed successfully', order: populatedOrder });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -9,7 +9,7 @@ import { WaiterView } from './views/WaiterView';
 import { CashierView } from './views/CashierView';
 import { AdminView } from './views/AdminView';
 
-// Dedicated Wrapper Component for /table/:tableId route
+// Dedicated Wrapper Component for /table/:tableId route (QR Scan Mode)
 function CustomerTableWrapper() {
   const { tableId } = useParams<{ tableId: string }>();
   const tableNumber = parseInt(tableId || '1') || 1;
@@ -23,7 +23,8 @@ function CustomerTableWrapper() {
 
   return (
     <CustomerView 
-      user={tableUser} 
+      user={tableUser}
+      isQrMode={true}
       onLogout={() => {
         window.location.href = '/';
       }} 
@@ -63,9 +64,8 @@ function MainApp() {
     case 'snacks_chef':
       return <ChefView user={currentUser as any} onLogout={handleLogout} />;
     case 'waiter':
-      return <WaiterView user={currentUser} onLogout={handleLogout} />;
     case 'cashier':
-      return <CashierView user={currentUser} onLogout={handleLogout} />;
+      return <AdminView user={currentUser} onLogout={handleLogout} />;
     case 'customer':
       return <CustomerView user={currentUser} onLogout={handleLogout} />;
     default:

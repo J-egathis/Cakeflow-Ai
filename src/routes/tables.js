@@ -82,17 +82,14 @@ router.get('/', async (req, res) => {
           } else if (order.status === 'ready' || order.status === 'quality_check') {
             table.status = 'Ready To Serve';
             table.orderProgress = 85;
-          } else if (order.status === 'served') {
-            table.status = 'Serving';
-            table.orderProgress = 95;
-            if (order.paymentStatus === 'paid') {
-              table.status = 'Completed';
-              table.paymentStatus = 'Paid';
-              table.orderProgress = 100;
-            } else {
-              table.status = 'Payment Pending';
-              table.paymentStatus = 'Pending';
-            }
+          } else if (order.status === 'served' || order.status === 'cancelled' || order.paymentStatus === 'paid') {
+            // AUTOMATIC TABLE AVAILABLE AFTER FINISH / SERVED & PAID!
+            table.status = 'Available';
+            table.currentOrderId = null;
+            table.currentOrderNumber = '';
+            table.currentBill = 0;
+            table.paymentStatus = 'Paid';
+            table.orderProgress = 0;
           }
           await table.save();
         }
@@ -161,13 +158,12 @@ router.put('/:tableNumber/status', async (req, res) => {
     if (paymentStatus) table.paymentStatus = paymentStatus;
 
     if (status === 'Available' || status === 'Completed' || status === 'Cleaning') {
-      if (status === 'Available') {
-        table.currentOrderId = null;
-        table.currentOrderNumber = '';
-        table.currentBill = 0;
-        table.paymentStatus = 'Unpaid';
-        table.orderProgress = 0;
-      }
+      table.status = 'Available';
+      table.currentOrderId = null;
+      table.currentOrderNumber = '';
+      table.currentBill = 0;
+      table.paymentStatus = 'Unpaid';
+      table.orderProgress = 0;
     }
 
     await table.save();
