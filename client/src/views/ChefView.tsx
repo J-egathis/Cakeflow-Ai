@@ -31,45 +31,45 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
   const columns = [
     { id: 'pending', name: 'Pending' },
-    { id: 'accepted', name: 'Accepted' },
+    { id: 'preparing', name: 'Preparing' },
     { id: 'ready', name: 'Ready' }
   ];
 
-  // Fetch orders
-  const fetchChefOrders = async () => {
-    setLoading(true);
+  // Fetch orders (showLoading=false for background silent polls)
+  const fetchChefOrders = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const data = await orderApi.getAll();
-      const activeOrders = data.filter((order: Order) => 
+      const activeOrders = data.filter((order: Order) =>
         order.status !== 'served' && order.status !== 'cancelled'
       );
       setOrders(activeOrders);
     } catch (err) {
       console.error('Failed to load chef orders:', err);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchChefOrders();
+    fetchChefOrders(true);
 
     const socket = getSocket();
     socket.emit('join_room', 'cake_kitchen');
     socket.emit('join_room', 'snacks_kitchen');
 
     const handleNewOrder = () => {
-      fetchChefOrders();
+      fetchChefOrders(false);
       playKitchenNotificationSound();
     };
 
     socket.on('new_order', handleNewOrder);
     socket.on('new_kitchen_items', handleNewOrder);
-    socket.on('order_updated', fetchChefOrders);
-    socket.on('table_status_updated', fetchChefOrders);
+    socket.on('order_updated', () => fetchChefOrders(false));
+    socket.on('table_status_updated', () => fetchChefOrders(false));
 
-    // Fast 3-second polling fallback so kitchen never misses orders
-    const intervalId = setInterval(fetchChefOrders, 3000);
+    // Silent background poll every 4s for instant kitchen auto-refresh
+    const intervalId = setInterval(() => fetchChefOrders(false), 4000);
 
     return () => {
       clearInterval(intervalId);
@@ -77,8 +77,8 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       socket.emit('leave_room', 'snacks_kitchen');
       socket.off('new_order', handleNewOrder);
       socket.off('new_kitchen_items', handleNewOrder);
-      socket.off('order_updated', fetchChefOrders);
-      socket.off('table_status_updated', fetchChefOrders);
+      socket.off('order_updated');
+      socket.off('table_status_updated');
     };
   }, []);
 
@@ -103,7 +103,21 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
     }
   };
 
-  const updateStatus = async (orderId: string, nextStatus: string, extras = {}) => {
+  const isItemInColumn = (item: any, colId: string) => {
+    const s = item.status || 'pending';
+    if (colId === 'pending') {
+      return s === 'pending';
+    }
+    if (colId === 'preparing') {
+      return s === 'accepted' || s === 'preparing' || s === 'decorating' || s === 'quality_check';
+    }
+    if (colId === 'ready') {
+      return s === 'ready';
+    }
+    return false;
+  };
+
+  const updateStatus = async (orderId: string, fromColId: string, nextStatus: string, extras = {}) => {
     try {
       const notes = chefNotes[orderId] || '';
       const estimatedMinutes = estTime[orderId] || 20;
@@ -115,14 +129,14 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       if (!order) return;
 
       const itemsToUpdate = order.items
-        .filter(item => itemMatchesTab(item, activeTab))
+        .filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, fromColId))
         .map(item => ({
           itemId: item._id,
           status: nextStatus
         }));
 
       await orderApi.update(orderId, {
-        status: nextStatus === 'ready' ? undefined : nextStatus,
+        status: undefined, // Let backend calculate overall order status from item statuses
         chefNotes: notes || undefined,
         estimatedCompletionTime: nextStatus === 'accepted' ? estimatedTime.toISOString() : undefined,
         items: itemsToUpdate,
@@ -170,14 +184,8 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
   const getOrdersInColumn = (colId: string) => {
     return orders.filter(order => {
-      const domainItems = order.items.filter(item => itemMatchesTab(item, activeTab));
-      if (domainItems.length === 0) return false;
-      
-      if (colId === 'pending') {
-        return domainItems.some(i => i.status === 'pending');
-      }
-      
-      return domainItems.some(i => i.status === colId);
+      const colItems = order.items.filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, colId));
+      return colItems.length > 0;
     });
   };
 
@@ -194,9 +202,9 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
     : columns.filter(c => c.id === mobileColFilter);
 
   return (
-    <div className="min-h-screen md:h-screen md:max-h-screen bg-[#F7F5F2] text-[#1E1818] flex flex-col relative overflow-x-hidden">
+    <div id="chefPage" data-testid="chefPage" className="min-h-screen md:h-screen md:max-h-screen bg-[#F7F5F2] text-[#1E1818] flex flex-col relative overflow-x-hidden">
       {/* Header */}
-      <header className="bg-white/95 backdrop-blur-md border-b border-[#D0C0C0] px-4 md:px-6 py-3 flex flex-col md:flex-row md:items-center justify-between z-10 shrink-0 gap-3 shadow-sm">
+      <header id="chefHeader" data-testid="chefHeader" className="bg-white/95 backdrop-blur-md border-b border-[#D0C0C0] px-4 md:px-6 py-3 flex flex-col md:flex-row md:items-center justify-between z-10 shrink-0 gap-3 shadow-sm">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-xl bg-[#CD0D0D] text-white shadow-md shadow-[#CD0D0D]/20 shrink-0">
@@ -217,7 +225,7 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
           <div className="flex md:hidden items-center gap-2">
             <button 
-              onClick={fetchChefOrders}
+              onClick={() => fetchChefOrders(true)}
               className="p-2 rounded-xl bg-white border border-[#D0C0C0] text-[#6E6262] hover:text-[#CD0D0D] transition-colors cursor-pointer shadow-sm"
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -253,7 +261,7 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
           {/* Desktop Actions */}
           <div className="hidden md:flex items-center gap-2 border-l border-[#D0C0C0] pl-4">
             <button 
-              onClick={fetchChefOrders}
+              onClick={() => fetchChefOrders(true)}
               className="p-2 rounded-xl bg-white border border-[#D0C0C0] text-[#6E6262] hover:text-[#CD0D0D] transition-colors cursor-pointer shadow-sm"
               title="Refresh Board"
             >
@@ -337,13 +345,12 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                       </div>
                     ) : (
                       colOrders.map(order => {
-                        const domainItems = order.items.filter(item => itemMatchesTab(item, activeTab));
-                        const displayStatus = domainItems[0]?.status || 'pending';
-                        const nextCol = getNextColumnId(displayStatus);
+                        const colItems = order.items.filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, col.id));
+                        const nextCol = getNextColumnId(col.id);
 
                         return (
                           <div 
-                            key={order._id} 
+                            key={`${order._id}-${col.id}`} 
                             className="bg-[#FAF8F8] border border-[#D0C0C0] hover:border-[#CD0D0D] p-3.5 rounded-2xl space-y-3 transition-all shadow-sm group"
                           >
                             {/* Order Header */}
@@ -360,27 +367,53 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                               </span>
                             </div>
 
-                            {/* Items List */}
-                            <div className="bg-white p-2.5 rounded-xl border border-[#E8E0E0] space-y-2">
-                              {domainItems.map(item => (
-                                <div key={item._id} className="text-xs space-y-1 border-b border-[#E8E0E0]/60 last:border-b-0 pb-1.5 last:pb-0">
-                                  <div className="flex justify-between items-center">
-                                    <span className="font-bold text-[#1E1818] text-[11px]">
-                                      {(item.product as any)?.name || (item as any)?.name || 'Food Item'}
-                                    </span>
-                                    <span className="text-[#CD0D0D] font-extrabold bg-[#CD0D0D]/10 px-2 py-0.5 rounded text-[10px]">x{item.quantity}</span>
-                                  </div>
-                                  {item.instructions && (
-                                    <div className="text-[10px] font-black text-[#CD0D0D] bg-[#CD0D0D]/10 border border-[#CD0D0D]/30 px-2 py-1 rounded-lg flex items-center gap-1.5 shadow-xs">
-                                      <span>📌 Note: "{item.instructions}"</span>
+                            {/* Items List grouped by Order Round / Batch */}
+                            {(() => {
+                              const roundsMap: { [r: number]: typeof colItems } = {};
+                              colItems.forEach(item => {
+                                const r = (item as any).round || 1;
+                                if (!roundsMap[r]) roundsMap[r] = [];
+                                roundsMap[r].push(item);
+                              });
+                              const roundNumbers = Object.keys(roundsMap).map(Number).sort((a, b) => a - b);
+
+                              return (
+                                <div className="bg-white p-2.5 rounded-xl border border-[#E8E0E0] space-y-2.5">
+                                  {roundNumbers.map(rNum => (
+                                    <div key={rNum} className="space-y-1.5 border-b border-[#E8E0E0]/60 last:border-b-0 pb-2 last:pb-0">
+                                      {roundNumbers.length > 1 && (
+                                        <div className="flex items-center justify-between bg-[#FAF8F8] px-2 py-0.5 rounded border border-[#E8E0E0]">
+                                          <span className="text-[10px] font-black text-[#CD0D0D]">
+                                            🔔 Order Round #{rNum}
+                                          </span>
+                                          <span className="text-[9px] font-bold text-[#6E6262]">
+                                            {rNum === 1 ? 'First Batch' : `Add-on Batch #${rNum - 1}`}
+                                          </span>
+                                        </div>
+                                      )}
+                                      {roundsMap[rNum].map(item => (
+                                        <div key={item._id} className="text-xs space-y-1">
+                                          <div className="flex justify-between items-center">
+                                            <span className="font-bold text-[#1E1818] text-[11px]">
+                                              {(item.product as any)?.name || (item as any)?.name || 'Food Item'}
+                                            </span>
+                                            <span className="text-[#CD0D0D] font-extrabold bg-[#CD0D0D]/10 px-2 py-0.5 rounded text-[10px]">x{item.quantity}</span>
+                                          </div>
+                                          {item.instructions && (
+                                            <div className="text-[10px] font-black text-[#CD0D0D] bg-[#CD0D0D]/10 border border-[#CD0D0D]/30 px-2 py-1 rounded-lg flex items-center gap-1.5 shadow-xs">
+                                              <span>📌 Note: "{item.instructions}"</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
                                     </div>
-                                  )}
+                                  ))}
                                 </div>
-                              ))}
-                            </div>
+                              );
+                            })()}
 
                             {/* Preparation inputs */}
-                            {(displayStatus === 'pending' || displayStatus === 'accepted') && (
+                            {(col.id === 'pending' || col.id === 'accepted') && (
                               <div className="grid grid-cols-2 gap-2">
                                 <div>
                                   <label className="block text-[9px] uppercase font-bold tracking-wider text-[#6E6262] mb-0.5">Est. Mins</label>
@@ -407,7 +440,7 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
 
                             {/* Actions */}
                             <div className="flex gap-2 justify-end pt-1">
-                              {displayStatus === 'pending' ? (
+                              {col.id === 'pending' ? (
                                 <>
                                   <button
                                     onClick={() => handleRejectClick(order)}
@@ -418,16 +451,16 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                                   </button>
                                   
                                   <button
-                                    onClick={() => updateStatus(order._id, 'accepted')}
+                                    onClick={() => updateStatus(order._id, col.id, 'preparing')}
                                     className="flex-1 items-center justify-center gap-1.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-extrabold transition-colors cursor-pointer flex shadow-sm active:scale-[0.98]"
                                   >
                                     <Check size={14} />
-                                    <span>Accept Order</span>
+                                    <span>Accept & Start Cooking</span>
                                   </button>
                                 </>
                               ) : nextCol ? (
                                 <button
-                                  onClick={() => updateStatus(order._id, nextCol)}
+                                  onClick={() => updateStatus(order._id, col.id, nextCol)}
                                   className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-[#CD0D0D] hover:bg-[#A60A0A] text-white text-xs font-extrabold transition-all shadow-md cursor-pointer active:scale-[0.98]"
                                 >
                                   <Play size={13} />

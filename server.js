@@ -23,16 +23,30 @@ const io = socketIo(server, {
 });
 initSockets(io);
 
-// Connect Database
-connectDB().then(() => {
-  // Seed Database with initial mock data
-  seedDB();
-});
+// Connect Database based on DB_MODE in .env ('mysql' or 'mongodb')
+const dbMode = (process.env.DB_MODE || 'mongodb').toLowerCase();
+
+if (dbMode === 'mysql') {
+  const { connectMySQL } = require('./src/config/mysql');
+  const seedMySQL = require('./src/config/seed_mysql');
+  connectMySQL().then((success) => {
+    if (success) {
+      seedMySQL();
+    } else {
+      console.log('⚠️ MySQL connection unverified. Falling back to MongoDB...');
+      connectDB().then(() => seedDB());
+    }
+  });
+} else {
+  connectDB().then(() => {
+    seedDB();
+  });
+}
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
 // Serve static assets from Vite client in production
 app.use(express.static(path.join(__dirname, 'client/dist')));

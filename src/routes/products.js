@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
-const auth = require('../middleware/auth');
+const { getIo } = require('../sockets');
 
 // Get all products with search and filter options
 router.get('/', async (req, res) => {
@@ -29,7 +29,7 @@ router.get('/', async (req, res) => {
       query.isOffer = true;
     }
 
-    const products = await Product.find(query);
+    const products = await Product.find(query).sort({ createdAt: -1 });
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -47,19 +47,28 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create product (Admin only)
-router.post('/', auth(['admin']), async (req, res) => {
+// Create product (Admin only / Live broadcast)
+router.post('/', async (req, res) => {
   try {
     const newProduct = new Product(req.body);
     const savedProduct = await newProduct.save();
+
+    try {
+      const io = getIo();
+      io.emit('product:created', savedProduct);
+      io.emit('product:updated', savedProduct);
+    } catch (e) {
+      console.log('Socket emit error on product create:', e.message);
+    }
+
     res.status(201).json(savedProduct);
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
 });
 
-// Update product (Admin only)
-router.put('/:id', auth(['admin']), async (req, res) => {
+// Update product (Hide/Unhide, Stock, Price, Details, etc.)
+router.put('/:id', async (req, res) => {
   try {
     const updatedProduct = await Product.findByIdAndUpdate(
       req.params.id,
@@ -67,18 +76,35 @@ router.put('/:id', auth(['admin']), async (req, res) => {
       { new: true }
     );
     if (!updatedProduct) return res.status(404).json({ message: 'Product not found' });
+
+    try {
+      const io = getIo();
+      io.emit('product:updated', updatedProduct);
+    } catch (e) {
+      console.log('Socket emit error on product update:', e.message);
+    }
+
     res.json(updatedProduct);
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
 });
 
-// Delete product (Admin only)
-router.delete('/:id', auth(['admin']), async (req, res) => {
+// Delete product (Admin only / Live broadcast)
+router.delete('/:id', async (req, res) => {
   try {
     const deletedProduct = await Product.findByIdAndDelete(req.params.id);
     if (!deletedProduct) return res.status(404).json({ message: 'Product not found' });
-    res.json({ message: 'Product deleted successfully' });
+
+    try {
+      const io = getIo();
+      io.emit('product:deleted', { id: req.params.id, _id: req.params.id });
+      io.emit('product:updated', { id: req.params.id, _id: req.params.id, isDeleted: true });
+    } catch (e) {
+      console.log('Socket emit error on product delete:', e.message);
+    }
+
+    res.json({ message: 'Product deleted successfully', id: req.params.id });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

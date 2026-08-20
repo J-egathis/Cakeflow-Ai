@@ -215,3 +215,72 @@ body::-webkit-scrollbar-thumb:hover,
 .animate-ready-glow {
   animation: pulseGlow 1.8s infinite;
 }
+
+/* Quick Responsive & Fast Tap Optimizations */
+* {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.quick-touch {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  will-change: transform;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.quick-touch:active {
+  transform: scale(0.96);
+}
+
+.responsive-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* 🖨 DIRECT POS THERMAL RECEIPT PRINT STYLES */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  body > *:not(#pos-thermal-print-container) {
+    display: none !important;
+  }
+
+  #pos-thermal-print-container {
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 80mm !important;
+    max-width: 80mm !important;
+    padding: 10px !important;
+    margin: 0 auto !important;
+    background: #ffffff !important;
+    color: #1E1818 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+    box-sizing: border-box !important;
+  }
+}
+
+@media screen {
+  #pos-thermal-print-container {
+    display: none !important;
+  }
+}
+

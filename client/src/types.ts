@@ -13,6 +13,8 @@ export interface Product {
   discountPrice?: number;
   isChefRecommended?: boolean;
   inStock: boolean;
+  isHidden?: boolean;
+  isAvailable?: boolean;
 }
 
 export interface OrderItem {
@@ -29,13 +31,13 @@ export interface Order {
   tableNumber: number;
   customerName: string;
   items: OrderItem[];
-  status: 'pending' | 'accepted' | 'preparing' | 'ready' | 'served' | 'cancelled';
+  status: 'pending' | 'accepted' | 'preparing' | 'decorating' | 'quality_check' | 'ready' | 'served' | 'cancelled';
   chefNotes?: string;
   rejectionReason?: 'Out of Stock' | 'Machine Issue' | 'Kitchen Busy' | 'Ingredient Missing' | '';
   estimatedCompletionTime?: string;
   totalAmount: number;
   paymentStatus: 'unpaid' | 'paid';
-  paymentMethod: 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Split';
+  paymentMethod: 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Split' | '';
   preparationTimerStartedAt?: string;
   createdAt: string;
 }

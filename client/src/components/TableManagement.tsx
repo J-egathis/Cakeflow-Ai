@@ -6,7 +6,7 @@ import {
   QrCode, Download, Printer, RefreshCw, Plus, Users, 
   Clock, DollarSign, CheckCircle2, AlertCircle, Eye, 
   Sparkles, Layers, ShieldCheck, Play, RotateCcw, Utensils,
-  Wifi, Edit2, Check
+  Wifi, Edit2, Check, Trash2
 } from 'lucide-react';
 
 interface TableManagementProps {
@@ -118,6 +118,18 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     }
   };
 
+  // Silent load for auto-refresh without loading spinner
+  const fetchTablesSilent = async () => {
+    try {
+      const data = await tableApi.getAll();
+      if (data && Array.isArray(data)) {
+        setTables(data);
+      }
+    } catch (err) {
+      console.error('Silent table refresh error:', err);
+    }
+  };
+
   useEffect(() => {
     fetchTables();
 
@@ -126,20 +138,37 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
 
     const handleTableUpdate = (updatedTable: SmartTable) => {
       setTables(prev => {
-        const index = prev.findIndex(t => t.tableNumber === updatedTable.tableNumber);
+        const index = prev.findIndex(t => t.tableNumber === updatedTable.tableNumber || (updatedTable._id && t._id === updatedTable._id));
+        let updatedList: SmartTable[];
         if (index >= 0) {
-          const newArr = [...prev];
-          newArr[index] = updatedTable;
-          return newArr;
+          updatedList = [...prev];
+          updatedList[index] = updatedTable;
+        } else {
+          updatedList = [...prev, updatedTable].sort((a, b) => a.tableNumber - b.tableNumber);
         }
-        return [...prev, updatedTable].sort((a, b) => a.tableNumber - b.tableNumber);
+        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        return updatedList;
+      });
+    };
+
+    const handleTableDeleted = (data: { tableNumber: number }) => {
+      setTables(prev => {
+        const updatedList = prev.filter(t => t.tableNumber !== data.tableNumber);
+        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        return updatedList;
       });
     };
 
     socket.on('table_status_updated', handleTableUpdate);
+    socket.on('table_deleted', handleTableDeleted);
+
+    // 4-second silent background auto-refresh interval for Table Management
+    const intervalId = setInterval(fetchTablesSilent, 4000);
 
     return () => {
+      clearInterval(intervalId);
       socket.off('table_status_updated', handleTableUpdate);
+      socket.off('table_deleted', handleTableDeleted);
     };
   }, []);
 
@@ -235,7 +264,13 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
               border-radius: 999px;
               font-size: 18px;
               font-weight: 700;
-              margin-bottom: 20px;
+              margin-bottom: 8px;
+            }
+            .capacity-badge {
+              font-size: 13px;
+              font-weight: 700;
+              color: #1E1818;
+              margin-bottom: 16px;
             }
             .qr-img {
               width: 220px;
@@ -262,7 +297,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
             <div class="logo">🍰 CakeFlow AI</div>
             <div class="sub">Smart Dining & Instant Order</div>
             <div class="table-badge">TABLE ${table.tableNumber}</div>
-            <br/>
+            <div class="capacity-badge">👥 Capacity: ${table.capacity || table.customerCount || 2} Members</div>
             <img src="${dataUrl}" class="qr-img" alt="QR Code" />
             <div class="cta">SCAN TO ORDER</div>
             <div class="desc">Point your camera to view menu & place instant order</div>
@@ -282,13 +317,45 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     try {
       const created = await tableApi.createTable({
         tableNumber: newTableNum,
-        capacity: newTableCapacity
+        capacity: newTableCapacity,
+        customerCount: newTableCapacity
       });
-      setTables(prev => [...prev, created].sort((a, b) => a.tableNumber - b.tableNumber));
       setShowAddTableModal(false);
       setNewTableNum(prev => prev + 1);
+      setNewTableCapacity(4);
+
+      setTables(prev => {
+        const index = prev.findIndex(t => t.tableNumber === created.tableNumber || (created._id && t._id === created._id));
+        let updatedList: SmartTable[];
+        if (index >= 0) {
+          updatedList = [...prev];
+          updatedList[index] = created;
+        } else {
+          updatedList = [...prev, created].sort((a, b) => a.tableNumber - b.tableNumber);
+        }
+        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        return updatedList;
+      });
     } catch (err: any) {
       alert(err.message || 'Failed to add table');
+    }
+  };
+
+  const handleDeleteTable = async (tableNumber: number) => {
+    const confirmDelete = window.confirm(`Are you sure you want to delete Table ${tableNumber}? This will permanently remove its QR code and card.`);
+    if (!confirmDelete) return;
+
+    try {
+      await tableApi.deleteTable(tableNumber);
+      setTables(prev => {
+        const updatedList = prev.filter(t => t.tableNumber !== tableNumber);
+        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        return updatedList;
+      });
+      if (selectedTable?.tableNumber === tableNumber) setSelectedTable(null);
+      if (qrModalTable?.tableNumber === tableNumber) setQrModalTable(null);
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete table');
     }
   };
 
@@ -525,7 +592,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                         <span className="flex items-center gap-1 text-[#6E6262]">
                           <Users className="w-3.5 h-3.5" /> Capacity:
                         </span>
-                        <span className="font-bold">{table.customerCount || table.capacity} Seats</span>
+                        <span className="font-bold">{table.capacity || table.customerCount || 4} Members</span>
                       </div>
 
                       {table.currentOrderNumber && (
@@ -574,11 +641,23 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                 <div>
                   <div className="flex items-start justify-between gap-3 mb-4">
                     <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-lg font-black text-[#1E1818]">TABLE {table.tableNumber}</span>
-                        <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${style.text} ${style.bg} ${style.border}`}>
-                          {table.status}
-                        </span>
+                      <div className="flex items-center justify-between gap-2 mb-1 w-full">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg font-black text-[#1E1818]">TABLE {table.tableNumber}</span>
+                          <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${style.text} ${style.bg} ${style.border}`}>
+                            {table.status}
+                          </span>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteTable(table.tableNumber);
+                          }}
+                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 transition-colors cursor-pointer"
+                          title={`Delete Table ${table.tableNumber}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                       <p className="text-xs text-[#6E6262] font-mono">ID: {table.qrCodeId}</p>
                     </div>
@@ -604,8 +683,8 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                       <p className="font-bold text-[#1E1818]">{table.currentOrderNumber || 'None'}</p>
                     </div>
                     <div>
-                      <span className="text-[#6E6262] text-[10px]">Guests:</span>
-                      <p className="font-bold text-[#1E1818]">{table.customerCount || 2} People</p>
+                      <span className="text-[#6E6262] text-[10px]">Guests / Members:</span>
+                      <p className="font-bold text-[#1E1818]">{table.capacity || table.customerCount || 2} Members</p>
                     </div>
                     <div>
                       <span className="text-[#6E6262] text-[10px]">Current Bill:</span>
@@ -696,6 +775,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                 <label className="text-xs text-[#6E6262] font-bold block mb-1">Table Number:</label>
                 <input
                   type="number"
+                  min="1"
                   value={newTableNum}
                   onChange={(e) => setNewTableNum(parseInt(e.target.value) || 1)}
                   className="w-full bg-[#FAF8F8] border border-[#D0C0C0] rounded-xl px-3 py-2 text-sm text-[#1E1818] focus:border-[#CD0D0D] focus:outline-none"
@@ -703,11 +783,13 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
               </div>
 
               <div>
-                <label className="text-xs text-[#6E6262] font-bold block mb-1">Seating Capacity:</label>
+                <label className="text-xs text-[#6E6262] font-bold block mb-1">Guest / Member Capacity:</label>
                 <input
                   type="number"
+                  min="1"
                   value={newTableCapacity}
-                  onChange={(e) => setNewTableCapacity(parseInt(e.target.value) || 2)}
+                  onChange={(e) => setNewTableCapacity(parseInt(e.target.value) || 1)}
+                  placeholder="e.g. 10"
                   className="w-full bg-[#FAF8F8] border border-[#D0C0C0] rounded-xl px-3 py-2 text-sm text-[#1E1818] focus:border-[#CD0D0D] focus:outline-none"
                 />
               </div>
@@ -752,13 +834,17 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
 
               {/* QR Card Printable Standee Layout */}
               <div id={`qr-standee-card-${table.tableNumber}`} className="bg-[#FAF8F8] border border-[#D0C0C0] p-6 rounded-2xl text-center space-y-4 shadow-sm">
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <span className="bg-[#CD0D0D] text-white text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider">
                     CakeFlow AI Smart Menu
                   </span>
-                  <h3 className="text-xl font-black text-[#1E1818] tracking-tight pt-2">
+                  <h3 className="text-xl font-black text-[#1E1818] tracking-tight pt-1">
                     TABLE {table.tableNumber}
                   </h3>
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-[#D0C0C0] rounded-full text-xs font-extrabold text-[#1E1818]">
+                    <Users className="w-3.5 h-3.5 text-[#CD0D0D]" />
+                    <span>Capacity: {table.capacity || table.customerCount || 2} Members</span>
+                  </div>
                   <p className="text-xs text-[#6E6262] font-semibold">Scan QR Code to View Menu & Place Order</p>
                 </div>
 
@@ -805,6 +891,14 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                   <span>Print Standee</span>
                 </button>
               </div>
+
+              <button
+                onClick={() => handleDeleteTable(table.tableNumber)}
+                className="w-full py-2.5 bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 font-extrabold rounded-2xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              >
+                <Trash2 size={15} />
+                <span>Delete Table {table.tableNumber}</span>
+              </button>
             </div>
           </div>
         );

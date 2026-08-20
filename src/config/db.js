@@ -6,12 +6,15 @@ const connectDB = async () => {
 
   if (mongoURI) {
     try {
-      console.log('Connecting to MongoDB...');
-      const conn = await mongoose.connect(mongoURI);
-      console.log(`MongoDB Connected: ${conn.connection.host}`);
+      console.log(`Connecting to MongoDB Atlas...`);
+      const conn = await mongoose.connect(mongoURI, {
+        serverSelectionTimeoutMS: 4000,
+        connectTimeoutMS: 4000
+      });
+      console.log(`✅ MongoDB Atlas Connected Successfully: ${conn.connection.host}`);
       return;
     } catch (err) {
-      console.error('MongoDB Atlas Connection Error:', err.message);
+      console.error(`MongoDB Atlas Primary Connection Attempt failed: ${err.message}`);
     }
   }
 

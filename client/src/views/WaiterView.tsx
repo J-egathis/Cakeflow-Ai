@@ -62,7 +62,7 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
       setOrders(ordersData);
 
       const productsData = await productApi.getAll();
-      setProducts(productsData.filter((p: Product) => p.inStock));
+      setProducts(productsData.filter((p: Product) => p.inStock && !p.isHidden));
 
       const tablesData = await tableApi.getAll();
       if (tablesData && tablesData.length > 0) {
@@ -83,23 +83,21 @@ export const WaiterView: React.FC<WaiterViewProps> = ({ user, onLogout }) => {
     const socket = getSocket();
     socket.emit('join_room', 'waiters');
 
-    socket.on('new_order', () => {
-      fetchWaiterData();
-    });
-
-    socket.on('order_updated', () => {
-      fetchWaiterData();
-    });
-
-    socket.on('table_status_updated', () => {
-      fetchWaiterData();
-    });
+    socket.on('new_order', fetchWaiterData);
+    socket.on('order_updated', fetchWaiterData);
+    socket.on('table_status_updated', fetchWaiterData);
+    socket.on('product:updated', fetchWaiterData);
+    socket.on('product:created', fetchWaiterData);
+    socket.on('product:deleted', fetchWaiterData);
 
     return () => {
       socket.emit('leave_room', 'waiters');
-      socket.off('new_order');
-      socket.off('order_updated');
-      socket.off('table_status_updated');
+      socket.off('new_order', fetchWaiterData);
+      socket.off('order_updated', fetchWaiterData);
+      socket.off('table_status_updated', fetchWaiterData);
+      socket.off('product:updated', fetchWaiterData);
+      socket.off('product:created', fetchWaiterData);
+      socket.off('product:deleted', fetchWaiterData);
     };
   }, []);
 

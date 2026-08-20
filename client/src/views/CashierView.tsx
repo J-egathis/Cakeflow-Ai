@@ -64,22 +64,24 @@ export const CashierView: React.FC<CashierViewProps> = ({ user, onLogout }) => {
 
   const handleProcessPayment = async () => {
     if (!selectedOrder) return;
+    const targetOrder = selectedOrder;
+    const targetMethod = paymentMethod;
+
+    // Instant UI feedback
+    setSelectedOrder(null);
+    setOrders(prev => prev.filter(o => o._id !== targetOrder._id));
+
     try {
-      await orderApi.closeTable(selectedOrder._id);
-      
-      // Set payment method
-      await orderApi.update(selectedOrder._id, {
-        paymentMethod,
+      await orderApi.closeTable(targetOrder._id, targetMethod);
+      await orderApi.update(targetOrder._id, {
+        paymentMethod: targetMethod,
         paymentStatus: 'paid'
       });
-
-      alert(`Payment of ₹${selectedOrder.totalAmount} processed successfully via ${paymentMethod}!`);
-      
-      // Reset selections
-      setSelectedOrder(null);
       fetchUnpaidOrders();
     } catch (err) {
+      console.error('Failed to process payment:', err);
       alert('Failed to process payment: ' + err);
+      fetchUnpaidOrders();
     }
   };
 

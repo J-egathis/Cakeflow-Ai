@@ -142,9 +142,15 @@ export const orderApi = {
       body: JSON.stringify({ paymentMethod })
     });
   },
-  remove: (id: string) => {
-    return request(`/orders/${id}`, {
+  remove: (id: string, permanent: boolean = true) => {
+    return request(`/orders/${id}${permanent ? '?permanent=true' : ''}`, {
       method: 'DELETE'
+    });
+  },
+  bulkRemove: (orderIds: string[]) => {
+    return request('/orders/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ orderIds })
     });
   }
 };
@@ -175,8 +181,11 @@ export const inventoryApi = {
 
 // Analytics Services
 export const analyticsApi = {
-  getDashboard: (dateFilter: string = 'today') => {
-    return request(`/analytics?dateFilter=${dateFilter}`);
+  getDashboard: (dateFilter: string = 'today', startDate?: string, endDate?: string) => {
+    let url = `/analytics?dateFilter=${dateFilter}`;
+    if (startDate) url += `&startDate=${startDate}`;
+    if (endDate) url += `&endDate=${endDate}`;
+    return request(url);
   }
 };
 
@@ -199,10 +208,15 @@ export const tableApi = {
       method: 'POST'
     });
   },
-  createTable: (tableData: { tableNumber: number; capacity?: number }) => {
+  createTable: (tableData: { tableNumber: number; capacity?: number; customerCount?: number }) => {
     return request('/tables', {
       method: 'POST',
       body: JSON.stringify(tableData)
+    });
+  },
+  deleteTable: (tableNumber: number) => {
+    return request(`/tables/${tableNumber}`, {
+      method: 'DELETE'
     });
   }
 };
@@ -212,7 +226,11 @@ let socket: Socket | null = null;
 
 export const getSocket = (): Socket => {
   if (!socket) {
-    socket = io(BASE_URL);
+    socket = io(BASE_URL, {
+      transports: ['websocket', 'polling'],
+      reconnectionDelay: 500,
+      reconnectionAttempts: 10
+    });
   }
   return socket;
 };

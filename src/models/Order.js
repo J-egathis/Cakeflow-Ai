@@ -19,6 +19,14 @@ const OrderItemSchema = new mongoose.Schema({
     type: String, // e.g. "Cake", "Snack", "Drink"
     required: true
   },
+  round: {
+    type: Number,
+    default: 1
+  },
+  orderedAt: {
+    type: Date,
+    default: Date.now
+  },
   status: {
     type: String,
     enum: ['pending', 'accepted', 'preparing', 'decorating', 'quality_check', 'ready', 'delivered'],

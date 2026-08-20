@@ -23,13 +23,14 @@ const generateQrDataUrl = async (url) => {
   }
 };
 
-// Seed 6 default tables if none exist
+// Seed default tables if none exist
 const seedDefaultTables = async () => {
+  if ((process.env.DB_MODE || '').toLowerCase() === 'mysql') return;
   try {
     const count = await Table.countDocuments();
     if (count === 0) {
-      console.log('Seeding 6 default Smart Tables with QR Codes...');
-      const tablesToSeed = [1, 2, 3, 4, 5, 6];
+      console.log('Seeding 7 default Smart Tables with QR Codes...');
+      const tablesToSeed = [1, 2, 3, 4, 5, 6, 7];
       for (const num of tablesToSeed) {
         const securityToken = `TOKEN_TBL_${num}_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
         const targetUrl = `https://cakeflowai.com/table/${num}`;
@@ -153,7 +154,13 @@ router.put('/:tableNumber/status', async (req, res) => {
     }
 
     if (status) table.status = status;
-    if (customerCount !== undefined) table.customerCount = customerCount;
+    if (customerCount !== undefined) table.customerCount = Number(customerCount);
+    if (req.body.capacity !== undefined) {
+      table.capacity = Number(req.body.capacity);
+      if (customerCount === undefined) {
+        table.customerCount = Number(req.body.capacity);
+      }
+    }
     if (waiterAssigned) table.waiterAssigned = waiterAssigned;
     if (paymentStatus) table.paymentStatus = paymentStatus;
 
@@ -216,23 +223,35 @@ router.post('/:tableNumber/regenerate-qr', async (req, res) => {
 // POST /api/tables - Admin adding new tables (Scalability to N tables)
 router.post('/', async (req, res) => {
   try {
-    const { tableNumber, capacity } = req.body;
-    const existing = await Table.findOne({ tableNumber });
-    if (existing) {
-      return res.status(400).json({ error: `Table ${tableNumber} already exists` });
+    const { tableNumber, capacity, customerCount } = req.body;
+    const num = Number(tableNumber);
+
+    if (!num || isNaN(num)) {
+      return res.status(400).json({ message: 'Valid table number is required' });
     }
 
-    const securityToken = `TOKEN_TBL_${tableNumber}_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-    const targetUrl = `https://cakeflowai.com/table/${tableNumber}`;
+    const existing = await Table.findOne({ tableNumber: num });
+    if (existing) {
+      return res.status(400).json({ message: `Table ${num} already exists` });
+    }
+
+    const cap = Number(capacity) || Number(customerCount) || 4;
+    const count = Number(customerCount) || cap;
+
+    const securityToken = `TOKEN_TBL_${num}_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+    const origin = req.headers.origin || req.headers.referer || `http://${req.headers.host || 'localhost:5001'}`;
+    const cleanOrigin = origin.replace(/\/$/, '');
+    const targetUrl = `${cleanOrigin}/table/${num}`;
     const qrCodeDataUrl = await generateQrDataUrl(targetUrl);
 
     const newTable = await Table.create({
-      tableNumber,
-      qrCodeId: `QR-TBL-0${tableNumber}-${securityToken.slice(-6)}`,
+      tableNumber: num,
+      qrCodeId: `QR-TBL-0${num}-${securityToken.slice(-6)}`,
       securityToken,
       targetUrl,
       qrCodeDataUrl,
-      capacity: capacity || 4,
+      capacity: cap,
+      customerCount: count,
       status: 'Available'
     });
 
@@ -243,7 +262,28 @@ router.post('/', async (req, res) => {
 
     res.status(201).json(newTable);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Create table error:', err);
+    res.status(500).json({ message: err.message || 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/tables/:tableNumber - Admin deleting a table
+router.delete('/:tableNumber', async (req, res) => {
+  try {
+    const tableNum = parseInt(req.params.tableNumber);
+    const deleted = await Table.findOneAndDelete({ tableNumber: tableNum });
+    if (!deleted) {
+      return res.status(404).json({ message: `Table ${tableNum} not found` });
+    }
+
+    try {
+      const io = getIo();
+      io.emit('table_deleted', { tableNumber: tableNum });
+    } catch (e) {}
+
+    res.json({ message: `Table ${tableNum} deleted successfully`, tableNumber: tableNum });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 

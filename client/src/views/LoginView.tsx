@@ -106,6 +106,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           <div>
             <label className="block text-xs font-bold text-[#6E6262] uppercase tracking-wider mb-1.5">Username</label>
             <input
+              id="username"
+              name="username"
+              data-testid="username"
               type="text"
               required
               className="w-full bg-[#FAF8F8] border border-[#D0C0C0] focus:border-[#CD0D0D] rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors text-[#1E1818]"
@@ -118,6 +121,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           <div>
             <label className="block text-xs font-bold text-[#6E6262] uppercase tracking-wider mb-1.5">Password</label>
             <input
+              id="password"
+              name="password"
+              data-testid="password"
               type="password"
               required
               className="w-full bg-[#FAF8F8] border border-[#D0C0C0] focus:border-[#CD0D0D] rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors text-[#1E1818]"
@@ -128,6 +134,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           </div>
 
           <button
+            id="loginBtn"
+            name="loginBtn"
+            data-testid="loginBtn"
             type="submit"
             disabled={loading}
             className="w-full py-3.5 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-extrabold rounded-xl text-sm transition-all flex justify-center items-center gap-2 shadow-lg shadow-[#CD0D0D]/25 cursor-pointer active:scale-[0.98]"

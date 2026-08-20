@@ -109,6 +109,66 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const tblNum = parseInt(tableNumber) || 1;
+
+    // Check if an active unpaid order already exists for this table (MUST NOT BE SERVED OR CANCELLED)
+    let existingOrder = await Order.findOne({
+      tableNumber: tblNum,
+      paymentStatus: 'unpaid',
+      status: { $nin: ['served', 'cancelled'] }
+    });
+
+    if (existingOrder) {
+      // Determine round number for these newly added items
+      const currentMaxRound = existingOrder.items.reduce((max, i) => Math.max(max, i.round || 1), 1);
+      const nextRound = currentMaxRound + 1;
+
+      const itemsForNextRound = populatedItems.map(item => ({
+        ...item,
+        round: nextRound,
+        orderedAt: new Date()
+      }));
+
+      // Append items to the existing order
+      existingOrder.items.push(...itemsForNextRound);
+      existingOrder.totalAmount += totalAmount;
+      
+      // If the order was fully ready, revert it back to preparing so the new items are processed
+      if (existingOrder.status === 'ready') {
+        existingOrder.status = 'preparing';
+      }
+
+      const savedOrder = await existingOrder.save();
+      const fullOrder = await Order.findById(savedOrder._id).populate('items.product');
+
+      // Update Table's current bill
+      try {
+        const Table = require('../models/Table');
+        let table = await Table.findOne({ tableNumber: Number(tableNumber) });
+        if (table) {
+          table.currentBill = existingOrder.totalAmount;
+          if (table.status === 'Ready To Serve') {
+            table.status = 'Preparing';
+            table.orderProgress = 60;
+          }
+          await table.save();
+
+          const { getIo } = require('../sockets');
+          const io = getIo();
+          io.emit('table_status_updated', table);
+        }
+      } catch (tblErr) {
+        console.error('Failed to sync table on appended order:', tblErr.message);
+      }
+
+      // Notify that the order was updated (with new items)
+      notifyNewOrder(fullOrder); 
+      const { notifyOrderUpdate } = require('../sockets');
+      notifyOrderUpdate(fullOrder);
+
+      return res.status(200).json(fullOrder);
+    }
+
     const order = new Order({
       tableNumber: Number(tableNumber) || 1,
       customerName: customerName || `Table ${tableNumber} Guest`,
@@ -187,13 +247,10 @@ router.get('/', async (req, res) => {
 router.get('/table/:tableNumber', async (req, res) => {
   try {
     const tableNumber = parseInt(req.params.tableNumber);
-    // Find active orders (unserved or unpaid)
+    // Find active orders (must NOT be cancelled or served)
     const orders = await Order.find({
       tableNumber,
-      $or: [
-        { status: { $ne: 'served' } },
-        { paymentStatus: 'unpaid' }
-      ]
+      status: { $nin: ['served', 'cancelled'] }
     })
     .populate('items.product')
     .sort({ createdAt: -1 });
@@ -214,11 +271,50 @@ router.put('/:id', async (req, res) => {
       estimatedCompletionTime,
       paymentStatus,
       paymentMethod,
-      items // Array of items with their individual preparation status updates
+      items, // Array of items with their individual preparation status updates
+      deleteItemIds // Array of item IDs to delete (single or multi item deletion)
     } = req.body;
 
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    // Handle Item Deletion (Single or Multi-item deletion from live order)
+    if (deleteItemIds && Array.isArray(deleteItemIds) && deleteItemIds.length > 0) {
+      // Check if any requested item to delete is already in preparation or ready
+      const nonDeletableItems = order.items.filter(item => 
+        deleteItemIds.includes(String(item._id)) && 
+        ['preparing', 'decorating', 'quality_check', 'ready', 'served', 'delivered'].includes(item.status)
+      );
+
+      if (nonDeletableItems.length > 0) {
+        const itemNames = nonDeletableItems.map(i => i.name).join(', ');
+        return res.status(400).json({ 
+          message: `Chef preparation has already started for "${itemNames}". Items in preparing or ready state cannot be deleted!` 
+        });
+      }
+
+      // Remove specified items from order.items
+      order.items = order.items.filter(item => !deleteItemIds.includes(String(item._id)));
+
+      // Recalculate totalAmount from remaining items
+      let updatedTotal = 0;
+      for (const item of order.items) {
+        let product = null;
+        if (item.product) {
+          try {
+            product = await Product.findById(item.product);
+          } catch (e) {}
+        }
+        const price = product?.isOffer && product?.discountPrice ? product.discountPrice : (product?.price || 0);
+        updatedTotal += price * item.quantity;
+      }
+      order.totalAmount = updatedTotal;
+
+      // If all items were deleted, mark order as cancelled
+      if (order.items.length === 0) {
+        order.status = 'cancelled';
+      }
+    }
 
     // Handle preparation timer start
     if (status === 'preparing' && order.status !== 'preparing') {
@@ -321,9 +417,11 @@ router.post('/:id/close', async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     order.paymentStatus = 'paid';
+    order.paymentMethod = req.body.paymentMethod || 'Cash';
     if (order.status !== 'served') {
       order.status = 'served';
-      await deductInventoryForOrder(order);
+      // Background non-blocking inventory deduction for 0ms fast response
+      deductInventoryForOrder(order).catch(e => console.error('Background inventory deduct error:', e.message));
     }
     await order.save();
 
@@ -356,11 +454,46 @@ router.post('/:id/close', async (req, res) => {
   }
 });
 
-// Remove / Delete order by ID (Cancel order)
+// POST /api/orders/bulk-delete - Admin deleting multiple orders
+router.post('/bulk-delete', async (req, res) => {
+  try {
+    const { orderIds } = req.body;
+    if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ message: 'No order IDs provided for deletion' });
+    }
+
+    await Order.deleteMany({ _id: { $in: orderIds } });
+
+    res.json({ message: `${orderIds.length} order(s) deleted successfully`, deletedCount: orderIds.length });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Remove / Delete order by ID (Cancel order or Permanent deletion)
 router.delete('/:id', async (req, res) => {
   try {
+    const { permanent } = req.query;
+
+    if (permanent === 'true') {
+      const deleted = await Order.findByIdAndDelete(req.params.id);
+      if (!deleted) return res.status(404).json({ message: 'Order not found' });
+      return res.json({ message: 'Order permanently deleted', orderId: req.params.id });
+    }
+
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    if (permanent !== 'true') {
+      const inPreparationItems = order.items.filter(item => 
+        ['preparing', 'decorating', 'quality_check', 'ready', 'served', 'delivered'].includes(item.status)
+      );
+      if (inPreparationItems.length > 0) {
+        return res.status(400).json({ 
+          message: 'Chef preparation has already started in the kitchen! Order cannot be cancelled.' 
+        });
+      }
+    }
 
     order.status = 'cancelled';
     order.rejectionReason = 'Order removed / cancelled by customer/staff';

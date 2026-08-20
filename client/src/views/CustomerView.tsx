@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Product, Order, OrderItem } from '../types';
 import { productApi, orderApi, tableApi, getSocket, BASE_URL } from '../services/api';
+import { SmartReceiptModal } from '../components/SmartReceiptModal';
 import { 
   Search, ShoppingBag, Clock, Heart, Minus, Plus, 
   Send, Sparkles, AlertTriangle, CheckCircle, ChefHat, 
-  Coffee, HelpCircle, AlertCircle, ShoppingCart, Trash2, ChevronRight, Filter, Check
+  Coffee, HelpCircle, AlertCircle, ShoppingCart, Trash2, ChevronRight, Filter, Check, Lock
 } from 'lucide-react';
 
 interface CustomerViewProps {
@@ -43,14 +44,18 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
   const [specialInstructions, setSpecialInstructions] = useState<{[key: string]: string}>({});
 
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
+  const [selectedDeleteItems, setSelectedDeleteItems] = useState<string[]>([]);
   const [aiCombos, setAiCombos] = useState<any[]>([]);
   const [aiPrepTime, setAiPrepTime] = useState<number>(15);
 
   // Food Details Modal State
   const [detailProductModal, setDetailProductModal] = useState<Product | null>(null);
   const [modalItemQty, setModalItemQty] = useState<number>(1);
+  const [showCustomerReceiptModal, setShowCustomerReceiptModal] = useState<boolean>(false);
 
-  const mainCategories = ['All', 'Juice', 'Snacks', 'Cakes', 'Chats'];
+  // Dynamic Categories derived from store menu items
+  const dynamicCatList = Array.from(new Set(products.map(p => p.category).filter(Boolean)));
+  const mainCategories = ['All', ...Array.from(new Set(['Juice', 'Snacks', 'Cakes', 'Chats', ...dynamicCatList]))];
   
   const subCategoriesMap: Record<string, string[]> = {
     'All': [],
@@ -91,12 +96,22 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
       }
     };
 
+    const handleProductChange = () => {
+      fetchProducts();
+    };
+
     socket.on('order_status_changed', handleOrderChange);
     socket.on('order_updated', handleOrderChange);
     socket.on('table_status_updated', fetchActiveOrder);
+    socket.on('product:updated', handleProductChange);
+    socket.on('product:created', handleProductChange);
+    socket.on('product:deleted', handleProductChange);
 
-    // Fast 3-second polling fallback so customer tracker always stays live
-    const intervalId = setInterval(fetchActiveOrder, 3000);
+    // Fast 3-second polling fallback for active order and product menu updates
+    const intervalId = setInterval(() => {
+      fetchActiveOrder();
+      fetchProducts();
+    }, 3000);
 
     return () => {
       clearInterval(intervalId);
@@ -104,6 +119,9 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
       socket.off('order_status_changed', handleOrderChange);
       socket.off('order_updated', handleOrderChange);
       socket.off('table_status_updated', fetchActiveOrder);
+      socket.off('product:updated', handleProductChange);
+      socket.off('product:created', handleProductChange);
+      socket.off('product:deleted', handleProductChange);
     };
   }, [currentTable]);
 
@@ -244,22 +262,83 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
     }
   };
 
+  const isItemInPreparationOrReady = (itemStatus?: string) => {
+    if (!itemStatus) return false;
+    return ['preparing', 'decorating', 'quality_check', 'ready', 'served', 'delivered'].includes(itemStatus);
+  };
+
   const handleRemoveOrder = async (orderId: string) => {
-    if (!window.confirm('Are you sure you want to cancel and remove this live order?')) {
+    if (!orderId) return;
+
+    // Block cancellation if chef has started preparing any food item
+    const cookingItems = activeOrder?.items?.filter((item: any) => isItemInPreparationOrReady(item.status));
+    if (cookingItems && cookingItems.length > 0) {
+      alert('Chef kitchen-la preparation start pannitaar! Entire live order-a cancel panna mudiyadhu.\n(Chef has already started preparing food in the kitchen! Live order cannot be cancelled now).');
       return;
     }
+
+    if (!window.confirm('Are you sure you want to cancel and remove this entire live order?')) {
+      return;
+    }
+    const targetOrderId = orderId;
+
+    // Instant UI Reset (0ms delay)
+    setActiveOrder(null);
+    setSelectedDeleteItems([]);
+
     try {
-      await orderApi.remove(orderId);
-      setActiveOrder(null);
+      await orderApi.remove(targetOrderId);
     } catch (err: any) {
       console.warn('Remove order primary attempt failed, attempting fallback status cancellation:', err);
       try {
-        await orderApi.update(orderId, { status: 'cancelled', rejectionReason: 'Order cancelled by customer' });
-        setActiveOrder(null);
+        await orderApi.update(targetOrderId, { status: 'cancelled', rejectionReason: 'Order cancelled by customer' });
       } catch (fallbackErr) {
-        setActiveOrder(null);
+        console.error('Failed to cancel order on backend:', fallbackErr);
       }
     }
+  };
+
+  const handleDeleteItems = async (itemIdsToDelete: string[]) => {
+    if (!activeOrder || itemIdsToDelete.length === 0) return;
+
+    // Block deletion if any selected item is in preparation/ready
+    const cookingItems = activeOrder.items?.filter((item: any) => 
+      itemIdsToDelete.includes(item._id) && isItemInPreparationOrReady(item.status)
+    );
+
+    if (cookingItems && cookingItems.length > 0) {
+      const names = cookingItems.map((i: any) => i.product?.name || i.name || 'Item').join(', ');
+      alert(`Chef preparation start pannitaar! "${names}" item-a delete panna mudiyadhu.\n(Preparation has already started for this item in the kitchen and cannot be deleted).`);
+      return;
+    }
+
+    const count = itemIdsToDelete.length;
+    const confirmMsg = count === 1
+      ? 'Are you sure you want to delete this item from your live order?'
+      : `Are you sure you want to delete these ${count} selected items from your live order?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const updatedOrder = await orderApi.update(activeOrder._id, {
+        deleteItemIds: itemIdsToDelete
+      });
+
+      if (!updatedOrder.items || updatedOrder.items.length === 0 || updatedOrder.status === 'cancelled') {
+        setActiveOrder(null);
+      } else {
+        setActiveOrder(updatedOrder);
+      }
+      setSelectedDeleteItems([]);
+    } catch (err: any) {
+      alert('Failed to delete item(s): ' + (err.message || err));
+    }
+  };
+
+  const toggleSelectItemForDelete = (itemId: string) => {
+    setSelectedDeleteItems(prev =>
+      prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId]
+    );
   };
 
   const getCategoryCount = (mainCat: string) => {
@@ -277,6 +356,7 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
 
   // Filter items
   const filteredProducts = products.filter(p => {
+    if (p.isHidden) return false;
     const safeName = p.name || '';
     const safeCat = p.category || '';
     const lowerCat = safeCat.toLowerCase();
@@ -335,7 +415,13 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
     
     // Weight calculation
     const score = (readyCount * 1.0) + (prepCount * 0.5);
-    const progress = Math.min(95, Math.round(25 + (score / totalItems) * 65));
+    let progress = Math.min(95, Math.round(25 + (score / totalItems) * 65));
+    
+    // Ensure "Preparing" step is highlighted if there are preparing items
+    if (prepCount > 0 && progress < 60) {
+      progress = 60;
+    }
+    
     return progress;
   };
 
@@ -345,15 +431,13 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
     if (activeOrder.status === 'ready') return 'All Items Ready! Serving now...';
     
     const items = activeOrder.items || [];
-    const anyPreparing = items.some((i: any) => i.status === 'preparing');
+    const anyPreparing = items.some((i: any) => i.status === 'preparing' || i.status === 'accepted');
     const anyDecorating = items.some((i: any) => i.status === 'decorating');
     const anyQuality = items.some((i: any) => i.status === 'quality_check');
 
     if (anyQuality) return 'Chef Performing Quality Check';
     if (anyDecorating) return 'Cake Decorator Sculpting Drizzle';
-    if (anyPreparing) return 'Baking & Preparing in Kitchen';
-    if (activeOrder.status === 'preparing') return 'Cooking Started';
-    if (activeOrder.status === 'accepted') return 'Chef Accepted Order';
+    if (anyPreparing || activeOrder.status === 'preparing' || activeOrder.status === 'accepted') return 'Baking & Preparing in Kitchen';
     
     return 'Pending Review';
   };
@@ -408,10 +492,10 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
   }
 
   return (
-    <div className="h-screen w-full bg-[#F7F5F2] text-[#1E1818] flex flex-col overflow-hidden">
+    <div id="customerPage" data-testid="customerPage" className="h-screen w-full bg-[#F7F5F2] text-[#1E1818] flex flex-col overflow-hidden">
 
       {/* ═══════════ TOP HEADER (Responsive for all screens) ═══════════ */}
-      <header className="shrink-0 bg-white border-b border-[#E0D4D4] px-2.5 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between z-40 shadow-sm">
+      <header id="customerHeader" data-testid="customerHeader" className="shrink-0 bg-white border-b border-[#E0D4D4] px-2.5 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between z-40 shadow-sm">
         <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
           <div className="p-1.5 rounded-xl bg-[#CD0D0D] text-white shadow-md shadow-[#CD0D0D]/20 shrink-0">
             <Coffee size={15} className="sm:w-4 sm:h-4" />
@@ -448,6 +532,16 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {activeOrder && (
+            <button
+              onClick={() => setShowCustomerReceiptModal(true)}
+              className="px-2 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-[#CD0D0D] font-extrabold text-[9px] sm:text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95"
+              title="View Digital Invoice Receipt"
+            >
+              <span>🧾 Bill</span>
+            </button>
+          )}
+
           <button
             onClick={() => setShowCart(true)}
             className="relative p-1.5 sm:p-2 rounded-xl bg-[#FAF8F8] border border-[#D0C0C0] hover:border-[#CD0D0D] transition-colors cursor-pointer"
@@ -593,10 +687,10 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
         {/* ─── RIGHT SCROLLABLE CONTENT ─── */}
         <div className="flex-1 overflow-y-auto bg-[#F7F5F2] min-w-0">
 
-          {/* LIVE ORDER TRACKER */}
+          {/* LIVE ORDER TRACKER WITH SINGLE & MULTI ITEM DELETION */}
           {activeOrder && activeOrder.status !== 'cancelled' && (
-            <div className="mx-2 sm:mx-3.5 mt-2.5 sm:mt-3.5 bg-white border border-[#CD0D0D]/30 rounded-2xl p-2.5 sm:p-3.5 shadow-sm">
-              <div className="flex items-center justify-between mb-2">
+            <div className="mx-2 sm:mx-3.5 mt-2.5 sm:mt-3.5 bg-white border border-[#CD0D0D]/30 rounded-2xl p-3 sm:p-3.5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-[#F4EAEA]">
                 <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
                   <div className="p-1 sm:p-1.5 rounded-lg bg-[#CD0D0D]/10 text-[#CD0D0D] shrink-0">
                     <ChefHat size={14} />
@@ -613,34 +707,146 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                   <span className="font-black text-xs sm:text-base text-[#CD0D0D] font-mono">₹{activeOrder.totalAmount}</span>
-                  {activeOrder.status === 'pending' && (
-                    <button onClick={() => handleRemoveOrder(activeOrder._id)} className="p-1 sm:p-1.5 bg-[#FFF0F0] rounded-lg cursor-pointer text-[#CD0D0D] hover:bg-[#CD0D0D] hover:text-white transition-all">
+                  {activeOrder.status !== 'served' && (
+                    <button 
+                      onClick={() => handleRemoveOrder(activeOrder._id)} 
+                      className="p-1 sm:p-1.5 bg-[#FFF0F0] rounded-lg cursor-pointer text-[#CD0D0D] hover:bg-[#CD0D0D] hover:text-white transition-all text-[10px] font-bold flex items-center gap-1"
+                      title="Cancel Entire Order"
+                    >
                       <Trash2 size={11} />
+                      <span className="text-[10px] font-bold">Cancel All</span>
                     </button>
                   )}
                 </div>
               </div>
-              {/* Progress */}
-              <div className="mb-2">
+
+              {/* Progress Bar */}
+              <div>
                 <div className="flex justify-between text-[8px] font-bold text-[#9E8080] mb-1">
-                  <span>Progress</span><span className="text-[#CD0D0D]">{currentPercent}%</span>
+                  <span>Order Progress</span><span className="text-[#CD0D0D]">{currentPercent}%</span>
                 </div>
                 <div className="w-full bg-[#F4EAEA] rounded-full h-1.5 sm:h-2 overflow-hidden">
                   <div className="h-full bg-gradient-to-r from-[#CD0D0D] to-[#FF5555] rounded-full transition-all duration-700" style={{ width: `${currentPercent}%` }} />
                 </div>
               </div>
-              {/* Item status pills */}
-              <div className="flex flex-wrap gap-1">
-                {activeOrder.items?.map((item: any, idx: number) => {
-                  const nm = item.product?.name || item.name || 'Item';
-                  const st = item.status || 'pending';
-                  const ready = st === 'ready' || st === 'delivered';
-                  return (
-                    <span key={idx} className={`text-[7px] sm:text-[8px] font-bold px-1.5 py-0.5 rounded-full ${ready ? 'bg-emerald-100 text-emerald-700' : 'bg-[#FFF0F0] text-[#CD0D0D]'}`}>
-                      {item.quantity}x {nm.length > 10 ? nm.slice(0, 10) + '…' : nm}
-                    </span>
-                  );
-                })}
+
+              {/* LIVE ITEMS & DELETION LIST (Single & Multi-Item Delete) */}
+              <div className="space-y-2 pt-1 border-t border-[#F4EAEA]">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] sm:text-[10px] font-extrabold uppercase tracking-wider text-[#6E6262]">
+                    Items in Live Order ({activeOrder.items?.length || 0})
+                  </span>
+                  {selectedDeleteItems.length > 0 && (
+                    <button
+                      onClick={() => setSelectedDeleteItems([])}
+                      className="text-[9px] font-bold text-[#6E6262] hover:text-[#1E1818] underline cursor-pointer"
+                    >
+                      Clear Selection
+                    </button>
+                  )}
+                </div>
+
+                {/* Multi-Item Delete Action Bar */}
+                {selectedDeleteItems.length > 0 && (
+                  <div className="bg-[#CD0D0D] text-white px-2.5 py-1.5 rounded-xl flex items-center justify-between text-[11px] font-bold shadow-md animate-fade-in">
+                    <span>{selectedDeleteItems.length} item(s) selected</span>
+                    <button
+                      onClick={() => handleDeleteItems(selectedDeleteItems)}
+                      className="bg-white text-[#CD0D0D] hover:bg-[#FAF8F8] px-2.5 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                    >
+                      <Trash2 size={11} />
+                      <span>Delete Selected ({selectedDeleteItems.length})</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Interactive Items List */}
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {activeOrder.items?.map((item: any) => {
+                    const nm = item.product?.name || item.name || 'Food Item';
+                    const price = item.product?.isOffer && item.product?.discountPrice ? item.product.discountPrice : (item.product?.price || item.price || 0);
+                    const st = item.status || 'pending';
+                    const isSelected = selectedDeleteItems.includes(item._id);
+                    const isLockedFromDelete = isItemInPreparationOrReady(st);
+
+                    return (
+                      <div 
+                        key={item._id} 
+                        className={`flex items-center justify-between p-2 rounded-xl border text-xs transition-all ${
+                          isSelected 
+                            ? 'bg-[#CD0D0D]/10 border-[#CD0D0D]' 
+                            : 'bg-[#FAF8F8] border-[#E8E0E0] hover:border-[#D0C0C0]'
+                        }`}
+                      >
+                        {/* Checkbox & Details */}
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isLockedFromDelete ? (
+                            <div 
+                              title="Chef preparation start pannitaar! Intha item-a select panna mudiyadhu."
+                              className="w-3.5 h-3.5 flex items-center justify-center opacity-40 cursor-not-allowed"
+                            >
+                              <Lock size={10} className="text-amber-700" />
+                            </div>
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelectItemForDelete(item._id)}
+                              className="accent-[#CD0D0D] w-3.5 h-3.5 cursor-pointer rounded"
+                            />
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-[#1E1818] truncate text-[11px]">{nm}</span>
+                              <span className="text-[#CD0D0D] font-extrabold bg-[#CD0D0D]/10 px-1.5 py-0.2 rounded text-[9px]">x{item.quantity}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[9px] text-[#6E6262]">
+                              <span>₹{price * item.quantity}</span>
+                              <span className={`px-1.5 py-0.2 rounded-full font-bold uppercase text-[8px] ${
+                                st === 'ready' || st === 'delivered'
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : isLockedFromDelete
+                                  ? 'bg-amber-100 text-amber-800 font-extrabold border border-amber-300'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}>
+                                {st}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Delete or Locked Badge */}
+                        {isLockedFromDelete ? (
+                          <div 
+                            onClick={() => alert(`Chef preparation start pannitaar! "${nm}" item-a delete panna mudiyadhu.`)}
+                            className="flex items-center gap-1 px-2 py-1 bg-amber-500/10 text-amber-700 border border-amber-200 rounded-lg text-[9px] font-extrabold cursor-pointer hover:bg-amber-500/20 transition-all shrink-0 ml-1.5"
+                            title="Preparation started in kitchen - Deletion locked"
+                          >
+                            <Lock size={11} />
+                            <span>In Kitchen</span>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleDeleteItems([item._id])}
+                            className="p-1.5 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-lg transition-colors cursor-pointer shrink-0 ml-1.5"
+                            title="Delete Single Food Item"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Full Width Cancel All Button */}
+                <button
+                  onClick={() => handleRemoveOrder(activeOrder._id)}
+                  className="w-full py-2 bg-[#FFF0F0] hover:bg-[#CD0D0D] text-[#CD0D0D] hover:text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-[0.98] mt-2"
+                >
+                  <Trash2 size={13} />
+                  <span>Cancel Entire Live Order</span>
+                </button>
               </div>
             </div>
           )}
@@ -934,6 +1140,13 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
             </div>
           </div>
         </div>
+      )}
+      {/* 🧾 ULTRA-MODERN AI SMART RECEIPT MODAL */}
+      {showCustomerReceiptModal && activeOrder && (
+        <SmartReceiptModal
+          order={activeOrder}
+          onClose={() => setShowCustomerReceiptModal(false)}
+        />
       )}
     </div>
   );
