@@ -1,1 +1,5 @@
 node_modules
+.env
+.env.hostinger
+.env.*
+CakeFlow_Hostinger_Deploy.zip

@@ -1,13 +1,75 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
-  <head>
+  <head><script>window.addEventListener("error", function(e) { document.body.innerHTML += "<div style='position:fixed;top:0;left:0;background:red;color:white;z-index:9999;padding:20px;word-wrap:break-word;'>" + (e.error ? e.error.stack : e.message) + "</div>"; });</script>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>client</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <title>VPN Restaurant</title>
+    <style>
+      body {
+        background-color: #4C1D95;
+        margin: 0;
+        padding: 0;
+        font-family: 'Inter', sans-serif;
+      }
+      .splash-screen {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        width: 100vw;
+        background-color: #4C1D95;
+        color: #ffffff;
+      }
+      .spinner {
+        width: 45px;
+        height: 45px;
+        border: 4px solid rgba(255, 255, 255, 0.1);
+        border-top-color: #4C1D95;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 20px;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .loading-text {
+        font-size: 1.1rem;
+        font-weight: 800;
+        letter-spacing: 2px;
+        color: #ffffff;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+      .loading-subtext {
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 1px;
+        color: #D1D5DB;
+        margin-top: 8px;
+        text-transform: uppercase;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="splash-screen">
+        <div class="spinner"></div>
+        <div class="loading-text">VPN RESTAURANT</div>
+        <div class="loading-subtext">Loading App...</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
+
+

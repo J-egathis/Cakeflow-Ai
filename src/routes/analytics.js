@@ -1,28 +1,58 @@
 const express = require('express');
 const router = express.Router();
-const Order = require('../models/Order');
-const Product = require('../models/Product');
-const Inventory = require('../models/Inventory');
+const { Order, OrderItem, Product, Inventory } = require('../config/mysql');
+const { staffOnly, adminOnly } = require('../middleware/auth');
 
 // Get Admin Analytics Dashboard Data (with Date Filtering: today, 7days, 30days, lastmonth, all, custom)
-router.get('/', async (req, res) => {
+router.get('/', staffOnly, async (req, res) => {
   try {
     const filter = (req.query.dateFilter || 'today').toLowerCase();
     const { startDate: qStartDate, endDate: qEndDate } = req.query;
 
+    // Helper to extract hour (0-23) in Indian Standard Time (Asia/Kolkata) regardless of server OS timezone (e.g. UTC on Hostinger)
+    const getIstHour = (dateInput) => {
+      try {
+        const d = new Date(dateInput || Date.now());
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'Asia/Kolkata',
+          hour: 'numeric',
+          hour12: false
+        }).formatToParts(d);
+        const hourPart = parts.find(p => p.type === 'hour');
+        if (hourPart) {
+          const h = parseInt(hourPart.value, 10);
+          if (!isNaN(h)) return h === 24 ? 0 : h;
+        }
+      } catch (e) {}
+      const d = new Date(dateInput || Date.now());
+      const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
+      return new Date(utcMs + 5.5 * 3600000).getHours();
+    };
+
+    // Compute Today / 7Days / 30Days boundaries in IST (+05:30) so Hostinger (UTC) and Local (IST) match 100%
+    const getIstDateString = (d = new Date()) => {
+      try {
+        return new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Kolkata',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(d); // YYYY-MM-DD in IST
+      } catch (e) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+    };
+
     const now = new Date();
-    
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
+    const todayIstStr = getIstDateString(now);
+    const startOfToday = new Date(`${todayIstStr}T00:00:00+05:30`);
+    const endOfToday = new Date(`${todayIstStr}T23:59:59.999+05:30`);
 
-    const endOfToday = new Date(now);
-    endOfToday.setHours(23, 59, 59, 999);
-
-    const startOf7Days = new Date(startOfToday);
-    startOf7Days.setDate(startOf7Days.getDate() - 6);
-
-    const startOf30Days = new Date(startOfToday);
-    startOf30Days.setDate(startOf30Days.getDate() - 29);
+    const startOf7Days = new Date(startOfToday.getTime() - 6 * 24 * 3600 * 1000);
+    const startOf30Days = new Date(startOfToday.getTime() - 29 * 24 * 3600 * 1000);
 
     let startDate = startOfToday;
     let endDate = endOfToday;
@@ -35,21 +65,31 @@ router.get('/', async (req, res) => {
       startDate = startOf30Days;
       periodLabel = "Last 30 Days";
     } else if (filter === 'lastmonth') {
-      startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
-      endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      const [yrStr, moStr] = todayIstStr.split('-');
+      const yr = parseInt(yrStr, 10);
+      const mo = parseInt(moStr, 10); // 1..12
+      const prevYear = mo === 1 ? yr - 1 : yr;
+      const prevMonth = mo === 1 ? 12 : mo - 1;
+      const lastDayPrevMonth = new Date(prevYear, prevMonth, 0).getDate();
+      const pmStr = String(prevMonth).padStart(2, '0');
+      startDate = new Date(`${prevYear}-${pmStr}-01T00:00:00+05:30`);
+      endDate = new Date(`${prevYear}-${pmStr}-${String(lastDayPrevMonth).padStart(2, '0')}T23:59:59.999+05:30`);
       periodLabel = "Last Month";
     } else if (filter === 'all') {
       startDate = new Date(0);
       endDate = new Date(2099, 11, 31);
       periodLabel = "All Time";
     } else if (filter === 'custom' || qStartDate || qEndDate) {
-      startDate = qStartDate ? new Date(`${qStartDate}T00:00:00`) : new Date(0);
-      endDate = qEndDate ? new Date(`${qEndDate}T23:59:59.999`) : new Date();
+      startDate = qStartDate ? new Date(`${qStartDate}T00:00:00+05:30`) : new Date(0);
+      endDate = qEndDate ? new Date(`${qEndDate}T23:59:59.999+05:30`) : new Date();
       periodLabel = qStartDate && qEndDate ? `${qStartDate} to ${qEndDate}` : "Custom Date Range";
     }
 
-    // Fetch all orders from MongoDB
-    const allOrders = await Order.find().populate('items.product').sort({ createdAt: -1 });
+    // Fetch all orders from MySQL
+    const allOrders = await Order.findAll({
+      include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product' }] }],
+      order: [['createdAt', 'DESC']]
+    });
 
     // Filter orders by date range
     const filteredOrders = allOrders.filter(o => {
@@ -57,7 +97,7 @@ router.get('/', async (req, res) => {
       return orderDate >= startDate && orderDate <= endDate;
     });
 
-    // Valid non-cancelled orders with totalAmount > 0 for accurate analytics
+    // Valid non-cancelled orders with totalAmount > 0
     const validOrders = filteredOrders.filter(o => o.status !== 'cancelled' && Boolean(o.totalAmount && o.totalAmount > 0));
     const grossRevenue = validOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
 
@@ -65,7 +105,7 @@ router.get('/', async (req, res) => {
     const pendingOrdersCount = validOrders.filter(o => ['pending', 'accepted', 'preparing', 'ready'].includes(o.status)).length;
     const completedOrdersCount = validOrders.filter(o => o.status === 'served' || (o.paymentStatus || '').toLowerCase() === 'paid').length;
 
-    // Real Active Occupied Tables count across all tables currently dining
+    // Real Active Occupied Tables count
     const activeOccupiedTables = new Set(
       allOrders
         .filter(o => o.status !== 'served' && o.status !== 'cancelled' && (o.paymentStatus || '').toLowerCase() !== 'paid' && Boolean(o.totalAmount && o.totalAmount > 0))
@@ -97,14 +137,15 @@ router.get('/', async (req, res) => {
     let totalItemSalesSum = 0;
 
     validOrders.forEach(o => {
-      o.items.forEach(item => {
+      const items = o.items || [];
+      items.forEach(item => {
         let catName = 'Snacks';
         const cat = (item.product?.category || item.category || '').toLowerCase();
         const pName = (item.product?.name || item.name || '').toLowerCase();
 
         if (cat.includes('cake') || cat.includes('pastr') || cat.includes('brownie') || cat.includes('cookie') || pName.includes('cake')) {
           catName = 'Cakes';
-        } else if (cat.includes('drink') || cat.includes('juice') || cat.includes('cold') || cat.includes('hot') || cat.includes('latte') || pName.includes('juice') || pName.includes('tea') || pName.includes('coffee')) {
+        } else if (cat.includes('drink') || cat.includes('juice') || cat.includes('cold') || cat.includes('hot') || cat.includes('latte') || pName.includes('juice') || pName.includes('tea') || pName.includes('coffee') || pName.includes('smoothie')) {
           catName = 'Juice';
         } else if (cat.includes('chat') || cat.includes('chaat') || pName.includes('puri')) {
           catName = 'Chats';
@@ -148,8 +189,8 @@ router.get('/', async (req, res) => {
     ];
 
     validOrders.forEach(o => {
-      const hr = new Date(o.createdAt).getHours();
-      if (hr >= 7 && hr < 9) peakHourSlots[0].orders++;
+      const hr = getIstHour(o.createdAt);
+      if (hr < 9) peakHourSlots[0].orders++;
       else if (hr >= 9 && hr < 11) peakHourSlots[1].orders++;
       else if (hr >= 11 && hr < 13) peakHourSlots[2].orders++;
       else if (hr >= 13 && hr < 15) peakHourSlots[3].orders++;

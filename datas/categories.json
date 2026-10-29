@@ -1,0 +1,26 @@
+{
+  "mealCategories": [
+    "Breakfast",
+    "Lunch",
+    "Dinner",
+    "pupps",
+    "mani"
+  ],
+  "hiddenMealCategories": [],
+  "categoryMealMap": {},
+  "dailyTargets": {},
+  "unsoldReports": [
+    {
+      "id": "unsold_1793097126825_mvd4",
+      "productId": "114",
+      "foodName": "dosa",
+      "category": "Dosa",
+      "mealType": "Breakfast",
+      "price": 33,
+      "unsoldQty": 10,
+      "reportedBy": "chef",
+      "note": "",
+      "createdAt": "2026-10-27T10:32:06.825Z"
+    }
+  ]
+}

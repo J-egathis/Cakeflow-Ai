@@ -16,42 +16,148 @@ const generateQrDataUrl = async (text) => {
 
 const seedMySQL = async () => {
   try {
-    // Seed Users
-    const userCount = await User.count();
-    if (userCount === 0) {
-      console.log('Seeding default users in MySQL...');
-      const adminPass = await bcrypt.hash('admin123', 10);
-      const chefPass = await bcrypt.hash('chef123', 10);
-      const cashierPass = await bcrypt.hash('cashier123', 10);
+    // 1. Seed Users
+    // Passwords come from .env (ADMIN_PASSWORD, CHEF_PASSWORD, WAITER_PASSWORD, CASHIER_PASSWORD).
+    // If an env password is set, existing accounts are updated to it on every start.
+    // If not set, the old demo passwords are used ONLY when creating a missing account.
+    const envPasswords = {
+      admin: process.env.ADMIN_PASSWORD,
+      chef: process.env.CHEF_PASSWORD,
+      waiter: process.env.WAITER_PASSWORD,
+      cashier: process.env.CASHIER_PASSWORD,
+      customer: process.env.CUSTOMER_PASSWORD
+    };
+    const demoPasswords = { admin: 'admin123', chef: 'chef123', waiter: 'waiter123', cashier: 'cashier123', customer: 'customer123' };
 
-      await User.bulkCreate([
-        { username: 'admin', password: adminPass, role: 'admin', name: 'Store Owner' },
-        { username: 'chef', password: chefPass, role: 'chef', name: 'Head Pastry Chef' },
-        { username: 'cashier', password: cashierPass, role: 'cashier', name: 'Front Desk Cashier' }
-      ]);
-      console.log('✅ Default users seeded in MySQL.');
+    const defaultUsers = [
+      { username: 'admin', group: 'admin', role: 'admin', name: 'Store Owner' },
+      { username: 'chef', group: 'chef', role: 'cake_chef', name: 'Head Pastry Chef' },
+      { username: 'cakechef', group: 'chef', role: 'cake_chef', name: 'Cake Chef' },
+      { username: 'cake_chef', group: 'chef', role: 'cake_chef', name: 'Head Cake Chef' },
+      { username: 'snackschef', group: 'chef', role: 'snacks_chef', name: 'Snacks Chef' },
+      { username: 'snacks_chef', group: 'chef', role: 'snacks_chef', name: 'Snacks Master Chef' },
+      { username: 'kitchen', group: 'chef', role: 'cake_chef', name: 'Kitchen Display' },
+      { username: 'waiter', group: 'waiter', role: 'waiter', name: 'Floor Waiter' },
+      { username: 'cashier', group: 'cashier', role: 'cashier', name: 'Front Desk Cashier' },
+      { username: 'customer', group: 'customer', role: 'customer', name: 'Table 1 Guest' }
+    ];
+
+    for (const { group, ...u } of defaultUsers) {
+      const envPass = envPasswords[group];
+      const existing = await User.findOne({ where: { username: u.username } });
+      if (!existing) {
+        const password = await bcrypt.hash(envPass || demoPasswords[group], 10);
+        await User.create({ ...u, password });
+      } else if (envPass && !(await existing.comparePassword(envPass))) {
+        existing.password = await bcrypt.hash(envPass, 10);
+        await existing.save();
+        console.log(`🔑 Password updated from .env for user: ${u.username}`);
+      }
     }
+    if (!envPasswords.admin) {
+      console.warn('⚠️ ADMIN_PASSWORD not set in .env. Default demo admin password may still be active!');
+    }
+    console.log('✅ Default users verified in MySQL.');
 
-    // Seed Products
+    // 2. Seed Products
     const productCount = await Product.count();
     if (productCount === 0) {
-      console.log('Seeding default products in MySQL...');
-      await Product.bulkCreate([
-        { name: 'Red Velvet Premium Cake', category: 'Cakes', price: 799, description: 'Rich cream cheese frosted velvet sponge cake', image: 'https://images.unsplash.com/photo-1586985289688-ca3cf47d3e6e?w=500', inStock: true, stockQuantity: 50 },
-        { name: 'Dark Chocolate Truffle Cake', category: 'Cakes', price: 899, description: 'Pure Belgian dark chocolate ganache glaze cake', image: 'https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=500', inStock: true, stockQuantity: 50 },
-        { name: 'Fresh Mango Cream Cake', category: 'Cakes', price: 699, description: 'Alphonso mango pulp infused fluffy cream cake', image: 'https://images.unsplash.com/photo-1535141192574-5d4897c13136?w=500', inStock: true, stockQuantity: 40 },
-        { name: 'Crispy Veg Puff Pastry', category: 'Snacks', price: 40, description: 'Flaky baked pastry filled with spiced vegetables', image: 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?w=500', inStock: true, stockQuantity: 100 },
-        { name: 'Paneer Tikka Roll', category: 'Snacks', price: 120, description: 'Grilled marinated cottage cheese cubes in tortilla', image: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=500', inStock: true, stockQuantity: 80 },
-        { name: 'Double Cheese Pizza Slice', category: 'Snacks', price: 150, description: 'Loaded mozzarella and cheddar cheese slice', image: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=500', inStock: true, stockQuantity: 60 },
-        { name: 'Fresh Cold Pressed Orange Juice', category: 'Juice', price: 90, description: '100% natural orange juice without added sugar', image: 'https://images.unsplash.com/photo-1613478223719-2ab802602423?w=500', inStock: true, stockQuantity: 100 },
-        { name: 'Berry Blast Smoothie', category: 'Juice', price: 140, description: 'Strawberry, blueberry and yogurt blend', image: 'https://images.unsplash.com/photo-1553530666-ba11a7da3888?w=500', inStock: true, stockQuantity: 70 },
-        { name: 'Pani Puri Platter (6 pcs)', category: 'Chats', price: 60, description: 'Crispy puris filled with potato and mint water', image: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=500', inStock: true, stockQuantity: 150 },
-        { name: 'Special Sev Puri', category: 'Chats', price: 80, description: 'Flat puris topped with onions, chutneys and sev', image: 'https://images.unsplash.com/photo-1626777552726-4a6b54c97e46?w=500', inStock: true, stockQuantity: 120 }
-      ]);
-      console.log('✅ Default products seeded in MySQL.');
+      console.log('Seeding demo categories and products in MySQL...');
+      
+      const { CategoryMeta } = require('./mysql');
+      const meals = {
+        Breakfast: ["Dosa", "Idli", "Pongal", "Beverages"],
+        Lunch: ["Meals", "Biryani", "Rice", "Curries"],
+        Dinner: ["Chapati", "Parotta", "Fried Rice", "Starters"]
+      };
+      
+      const foods = {
+        "Dosa": [
+          { name: "Masala Dosa", price: 60, desc: "Crispy dosa with spicy potato filling" },
+          { name: "Ghee Roast Dosa", price: 80, desc: "Golden dosa roasted in pure ghee" },
+          { name: "Onion Rava Dosa", price: 70, desc: "Thin rava crepe roasted with onions" }
+        ],
+        "Idli": [
+          { name: "Sambar Idli", price: 45, desc: "Soft idlis soaked in delicious sambar" },
+          { name: "Mini Ghee Idli", price: 55, desc: "Bite-sized idlis tossed with podi and ghee" },
+          { name: "Thatte Idli", price: 40, desc: "Large flat soft idli served with chutney" }
+        ],
+        "Pongal": [
+          { name: "Ven Pongal", price: 50, desc: "Classic South Indian breakfast with ghee and cashews" },
+          { name: "Sweet Pongal", price: 60, desc: "Sweetened rice and lentil dish with jaggery" },
+          { name: "Millet Pongal", price: 65, desc: "Healthy alternative made with millets" }
+        ],
+        "Beverages": [
+          { name: "Filter Coffee", price: 25, desc: "Authentic Kumbakonam degree filter coffee" },
+          { name: "Masala Tea", price: 20, desc: "Hot tea brewed with aromatic spices" },
+          { name: "Fresh Juice", price: 50, desc: "Freshly squeezed seasonal fruit juice" }
+        ],
+        "Meals": [
+          { name: "South Indian Thali", price: 120, desc: "Complete meal with rice, sambar, rasam, kootu, poriyal" },
+          { name: "Mini Meals", price: 80, desc: "Quick meal combo for a light lunch" },
+          { name: "Special Veg Thali", price: 150, desc: "Extensive meal with sweet, payasam and special curries" }
+        ],
+        "Biryani": [
+          { name: "Veg Dum Biryani", price: 130, desc: "Aromatic basmati rice cooked with mixed vegetables" },
+          { name: "Mushroom Biryani", price: 140, desc: "Spicy biryani with fresh mushrooms" },
+          { name: "Paneer Biryani", price: 150, desc: "Rich biryani layered with soft paneer cubes" }
+        ],
+        "Rice": [
+          { name: "Lemon Rice", price: 60, desc: "Tangy rice tempered with mustard and peanuts" },
+          { name: "Curd Rice", price: 55, desc: "Cooling curd rice served with pickle" },
+          { name: "Tomato Rice", price: 60, desc: "Spicy tomato flavored rice" }
+        ],
+        "Curries": [
+          { name: "Paneer Butter Masala", price: 140, desc: "Soft paneer in rich creamy tomato gravy" },
+          { name: "Dal Makhani", price: 120, desc: "Slow cooked black lentils with butter and cream" },
+          { name: "Mixed Veg Curry", price: 110, desc: "Assorted vegetables in flavorful onion-tomato gravy" }
+        ],
+        "Chapati": [
+          { name: "Soft Chapati (2 pcs)", price: 40, desc: "Soft whole wheat flatbreads" },
+          { name: "Butter Roti", price: 30, desc: "Tandoori roti topped with butter" },
+          { name: "Phulka (3 pcs)", price: 45, desc: "Light, oil-free puffed wheat breads" }
+        ],
+        "Parotta": [
+          { name: "Kerala Parotta (2 pcs)", price: 50, desc: "Flaky, layered traditional parotta" },
+          { name: "Kothu Parotta", price: 90, desc: "Minced parotta tossed with spices and vegetables" },
+          { name: "Chilli Parotta", price: 100, desc: "Fried parotta pieces in spicy Indo-Chinese sauce" }
+        ],
+        "Fried Rice": [
+          { name: "Veg Fried Rice", price: 110, desc: "Classic wok-tossed fried rice with veggies" },
+          { name: "Schezwan Fried Rice", price: 120, desc: "Spicy fried rice with schezwan sauce" },
+          { name: "Paneer Fried Rice", price: 130, desc: "Fried rice with soft paneer cubes" }
+        ],
+        "Starters": [
+          { name: "Gobi 65", price: 90, desc: "Crispy fried cauliflower florets tossed in spices" },
+          { name: "Paneer Tikka", price: 140, desc: "Marinated paneer cubes grilled in tandoor" },
+          { name: "Mushroom Pepper Fry", price: 110, desc: "Spicy pan-roasted mushrooms with black pepper" }
+        ]
+      };
+
+      for (const [meal, categories] of Object.entries(meals)) {
+        for (const cat of categories) {
+          await CategoryMeta.upsert({ name: cat, image: null, isHidden: false });
+          const items = foods[cat] || [];
+          for (const item of items) {
+            await Product.create({
+              name: item.name,
+              mealType: meal,
+              category: cat,
+              subCategory: "General",
+              price: item.price,
+              description: item.desc,
+              image: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500",
+              inStock: true,
+              isHidden: false,
+              stockQuantity: 100
+            });
+          }
+        }
+      }
+      console.log('✅ Demo products and categories seeded.');
     }
 
-    // Seed Tables
+    // 3. Seed Tables
     const tableCount = await SmartTable.count();
     if (tableCount === 0) {
       console.log('Seeding default Smart Tables in MySQL...');
@@ -67,23 +173,32 @@ const seedMySQL = async () => {
           securityToken,
           targetUrl,
           qrCodeDataUrl,
-          capacity: 4,
-          status: 'Available'
+          capacity: num % 2 === 0 ? 4 : 2,
+          customerCount: num % 2 === 0 ? 4 : 2,
+          status: 'Available',
+          currentBill: 0,
+          paymentStatus: 'Unpaid'
         });
       }
       console.log('✅ Default Smart Tables seeded in MySQL.');
     }
 
-    // Seed Inventory
+    // 4. Seed Inventory
     const invCount = await Inventory.count();
     if (invCount === 0) {
       console.log('Seeding default inventory items in MySQL...');
       await Inventory.bulkCreate([
-        { name: 'All-Purpose Flour (Maida)', quantity: 150, unit: 'kg', minThreshold: 20 },
-        { name: 'Granulated Sugar', quantity: 200, unit: 'kg', minThreshold: 25 },
-        { name: 'Belgian Dark Chocolate', quantity: 45, unit: 'kg', minThreshold: 10 },
-        { name: 'Unsalted Butter', quantity: 60, unit: 'kg', minThreshold: 15 },
-        { name: 'Fresh Cream', quantity: 80, unit: 'liters', minThreshold: 20 }
+        { name: 'Flour', quantity: 25000, unit: 'g', minThreshold: 5000 },
+        { name: 'Sugar', quantity: 20000, unit: 'g', minThreshold: 4000 },
+        { name: 'Belgian Dark Chocolate', quantity: 15000, unit: 'g', minThreshold: 2000 },
+        { name: 'Chocolate', quantity: 15000, unit: 'g', minThreshold: 2000 },
+        { name: 'Unsalted Butter', quantity: 10000, unit: 'g', minThreshold: 2000 },
+        { name: 'Butter', quantity: 10000, unit: 'g', minThreshold: 2000 },
+        { name: 'Fresh Cream', quantity: 12000, unit: 'ml', minThreshold: 2000 },
+        { name: 'Cream', quantity: 12000, unit: 'ml', minThreshold: 2000 },
+        { name: 'Milk', quantity: 15000, unit: 'ml', minThreshold: 3000 },
+        { name: 'Cheese', quantity: 8000, unit: 'g', minThreshold: 1500 },
+        { name: 'Eggs', quantity: 200, unit: 'units', minThreshold: 40 }
       ]);
       console.log('✅ Default inventory seeded in MySQL.');
     }

@@ -14,8 +14,14 @@ interface TableManagementProps {
 }
 
 export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableForOrder }) => {
-  const [tables, setTables] = useState<SmartTable[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [tables, setTables] = useState<SmartTable[]>(() => {
+    try {
+      const cached = localStorage.getItem('cakeflow_tables_cache');
+      if (cached) return JSON.parse(cached);
+    } catch (e) {}
+    return [];
+  });
+  const [loading, setLoading] = useState<boolean>(tables.length === 0);
   const [activeTab, setActiveTab] = useState<'floor' | 'cards'>('floor');
   const [selectedTable, setSelectedTable] = useState<SmartTable | null>(null);
   const [qrModalTable, setQrModalTable] = useState<SmartTable | null>(null);
@@ -23,10 +29,13 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
   const [tableDetailsModal, setTableDetailsModal] = useState<SmartTable | null>(null);
   const [qrCodeDataUrls, setQrCodeDataUrls] = useState<Record<number, string>>({});
   const [showAddTableModal, setShowAddTableModal] = useState<boolean>(false);
-  const [newTableNum, setNewTableNum] = useState<number>(7);
+  const [newTableNum, setNewTableNum] = useState<number>(() => {
+    return tables.length > 0 ? Math.max(...tables.map(t => Number(t.tableNumber) || 0), 0) + 1 : 8;
+  });
   const [newTableCapacity, setNewTableCapacity] = useState<number>(4);
   const STORAGE_KEY = 'cakeflow_qr_base_url';
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [selectedTableNumbers, setSelectedTableNumbers] = useState<number[]>([]);
   const [autoDetectedUrl, setAutoDetectedUrl] = useState<string>('');
   const [applyingIp, setApplyingIp] = useState<boolean>(false);
 
@@ -81,39 +90,62 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     await regenerateAllQrCodes(tableList, clean);
   };
 
-  // Re-generate all QR codes
-  const regenerateAllQrCodes = async (tableList: SmartTable[], baseUrl: string) => {
-    const qrMap: Record<number, string> = {};
-    for (const t of tableList) {
-      let validUrl = baseUrl.trim();
-      if (!validUrl.startsWith('http://') && !validUrl.startsWith('https://')) {
-        validUrl = `http://${validUrl}`;
-      }
-      const target = `${validUrl}/table/${t.tableNumber}`;
-      try {
-        const url = await QRCode.toDataURL(target, {
-          width: 400,
-          margin: 2,
-          color: { dark: '#1E1818', light: '#ffffff' }
-        });
-        qrMap[t.tableNumber] = url;
-      } catch (e) {
-        qrMap[t.tableNumber] = t.qrCodeDataUrl || '';
-      }
+  // Generate QR code for a single table (fast, non-blocking)
+  const generateSingleQrCode = async (tableNumber: number, baseUrl: string) => {
+    let validUrl = baseUrl.trim();
+    if (!validUrl.startsWith('http://') && !validUrl.startsWith('https://')) {
+      validUrl = `http://${validUrl}`;
     }
-    setQrCodeDataUrls(qrMap);
+    const target = `${validUrl}/table/${tableNumber}`;
+    try {
+      const url = await QRCode.toDataURL(target, {
+        width: 300,
+        margin: 2,
+        color: { dark: '#1F2937', light: '#ffffff' }
+      });
+      setQrCodeDataUrls(prev => ({ ...prev, [tableNumber]: url }));
+    } catch (e) {}
+  };
+
+  // Re-generate all QR codes in parallel without blocking UI
+  const regenerateAllQrCodes = async (tableList: SmartTable[], baseUrl: string) => {
+    let validUrl = baseUrl.trim();
+    if (!validUrl.startsWith('http://') && !validUrl.startsWith('https://')) {
+      validUrl = `http://${validUrl}`;
+    }
+    const entries = await Promise.all(
+      tableList.map(async (t) => {
+        const target = `${validUrl}/table/${t.tableNumber}`;
+        try {
+          const url = await QRCode.toDataURL(target, {
+            width: 300,
+            margin: 2,
+            color: { dark: '#1F2937', light: '#ffffff' }
+          });
+          return [t.tableNumber, url] as const;
+        } catch (e) {
+          return [t.tableNumber, t.qrCodeDataUrl || ''] as const;
+        }
+      })
+    );
+    setQrCodeDataUrls(Object.fromEntries(entries));
   };
 
   // Load all tables
   const fetchTables = async () => {
     try {
-      setLoading(true);
+      if (tables.length === 0) setLoading(true);
       const data = await tableApi.getAll();
-      setTables(data);
-      await fetchAndApplyLanIp(data);
+      if (data && Array.isArray(data) && data.length > 0) {
+        setTables(data);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(data));
+        setNewTableNum(Math.max(...data.map(t => Number(t.tableNumber) || 0), 0) + 1);
+      }
+      setLoading(false);
+      // Run LAN IP + QR generation in background without blocking table cards display
+      fetchAndApplyLanIp(data || []);
     } catch (err) {
       console.error('Failed to fetch tables:', err);
-    } finally {
       setLoading(false);
     }
   };
@@ -122,8 +154,9 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
   const fetchTablesSilent = async () => {
     try {
       const data = await tableApi.getAll();
-      if (data && Array.isArray(data)) {
+      if (data && Array.isArray(data) && data.length > 0) {
         setTables(data);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(data));
       }
     } catch (err) {
       console.error('Silent table refresh error:', err);
@@ -145,8 +178,10 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
           updatedList[index] = updatedTable;
         } else {
           updatedList = [...prev, updatedTable].sort((a, b) => a.tableNumber - b.tableNumber);
+          generateSingleQrCode(updatedTable.tableNumber, networkBaseUrl);
         }
-        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(updatedList));
+        setNewTableNum(Math.max(...updatedList.map(t => Number(t.tableNumber) || 0), 0) + 1);
         return updatedList;
       });
     };
@@ -154,8 +189,14 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     const handleTableDeleted = (data: { tableNumber: number }) => {
       setTables(prev => {
         const updatedList = prev.filter(t => t.tableNumber !== data.tableNumber);
-        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(updatedList));
+        setNewTableNum(Math.max(...updatedList.map(t => Number(t.tableNumber) || 0), 0) + 1);
         return updatedList;
+      });
+      setQrCodeDataUrls(prev => {
+        const next = { ...prev };
+        delete next[data.tableNumber];
+        return next;
       });
     };
 
@@ -196,7 +237,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
           validUrl = `http://${validUrl}`;
         }
         const target = `${validUrl}/table/${tableNumber}`;
-        const newUrl = await QRCode.toDataURL(target, { width: 400, margin: 2, color: { dark: '#1E1818', light: '#ffffff' } });
+        const newUrl = await QRCode.toDataURL(target, { width: 400, margin: 2, color: { dark: '#1F2937', light: '#ffffff' } });
         setQrCodeDataUrls(prev => ({ ...prev, [tableNumber]: newUrl }));
         setTables(prev => prev.map(t => t.tableNumber === tableNumber ? res.table : t));
       }
@@ -210,7 +251,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     if (!dataUrl) return;
     const a = document.createElement('a');
     a.href = dataUrl;
-    a.download = `CakeFlow_Table_${table.tableNumber}_QR.png`;
+    a.download = `VPN_Table_${table.tableNumber}_QR.png`;
     a.click();
   };
 
@@ -232,7 +273,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
               align-items: center;
               min-height: 100vh;
               margin: 0;
-              background-color: #F7F5F2;
+              background-color: #FFFFFF;
             }
             .qr-card {
               width: 320px;
@@ -241,24 +282,24 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
               border-radius: 24px;
               box-shadow: 0 20px 40px rgba(0,0,0,0.08);
               text-align: center;
-              border: 3px solid #CD0D0D;
+              border: 3px solid #4C1D95;
             }
             .logo {
               font-size: 24px;
               font-weight: 800;
-              color: #CD0D0D;
+              color: #4C1D95;
               margin-bottom: 4px;
             }
             .sub {
               font-size: 12px;
-              color: #6E6262;
+              color: #4B5563;
               letter-spacing: 1px;
               text-transform: uppercase;
               margin-bottom: 24px;
             }
             .table-badge {
               display: inline-block;
-              background: #CD0D0D;
+              background: #4C1D95;
               color: #ffffff;
               padding: 6px 20px;
               border-radius: 999px;
@@ -269,32 +310,32 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
             .capacity-badge {
               font-size: 13px;
               font-weight: 700;
-              color: #1E1818;
+              color: #1F2937;
               margin-bottom: 16px;
             }
             .qr-img {
               width: 220px;
               height: 220px;
               border-radius: 16px;
-              border: 2px solid #D0C0C0;
+              border: 2px solid #FBBF24;
               padding: 10px;
               margin-bottom: 20px;
             }
             .cta {
               font-size: 16px;
               font-weight: 700;
-              color: #1E1818;
+              color: #1F2937;
               margin-bottom: 4px;
             }
             .desc {
               font-size: 12px;
-              color: #6E6262;
+              color: #4B5563;
             }
           </style>
         </head>
         <body>
           <div class="qr-card">
-            <div class="logo">🍰 CakeFlow AI</div>
+            <div class="logo" style="display:flex; align-items:center; gap:8px; justify-content:center;"><img src="/logo.png" style="width:24px; height:24px; border-radius:50%;" alt="logo" /> VPN Restaurant</div>
             <div class="sub">Smart Dining & Instant Order</div>
             <div class="table-badge">TABLE ${table.tableNumber}</div>
             <div class="capacity-badge">👥 Capacity: ${table.capacity || table.customerCount || 2} Members</div>
@@ -314,18 +355,55 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
   };
 
   const handleAddNewTable = async () => {
+    const numToCreate = Number(newTableNum);
+    const capToCreate = Number(newTableCapacity) || 4;
+    if (!numToCreate || isNaN(numToCreate) || numToCreate < 1) {
+      alert('Please enter a valid table number');
+      return;
+    }
+    if (tables.some(t => Number(t.tableNumber) === numToCreate)) {
+      alert(`Table ${numToCreate} already exists!`);
+      return;
+    }
+
+    // 1. INSTANT 0ms OPTIMISTIC UI UPDATE
+    const optimisticTable: SmartTable = {
+      _id: `temp_${numToCreate}_${Date.now()}`,
+      tableNumber: numToCreate,
+      qrCodeId: `QR-TBL-0${numToCreate}`,
+      securityToken: `TOKEN_TBL_${numToCreate}`,
+      targetUrl: `${networkBaseUrl.replace(/\/$/, '')}/table/${numToCreate}`,
+      qrCodeDataUrl: '',
+      waiterAssigned: 'Unassigned',
+      capacity: capToCreate,
+      customerCount: capToCreate,
+      status: 'Available',
+      currentBill: 0,
+      paymentStatus: 'Unpaid',
+      orderProgress: 0
+    };
+
+    setShowAddTableModal(false);
+    setNewTableNum(numToCreate + 1);
+    setNewTableCapacity(4);
+
+    setTables(prev => {
+      const filtered = prev.filter(t => Number(t.tableNumber) !== numToCreate);
+      const updatedList = [...filtered, optimisticTable].sort((a, b) => a.tableNumber - b.tableNumber);
+      localStorage.setItem('cakeflow_tables_cache', JSON.stringify(updatedList));
+      return updatedList;
+    });
+    generateSingleQrCode(numToCreate, networkBaseUrl);
+
+    // 2. Background API sync
     try {
       const created = await tableApi.createTable({
-        tableNumber: newTableNum,
-        capacity: newTableCapacity,
-        customerCount: newTableCapacity
+        tableNumber: numToCreate,
+        capacity: capToCreate,
+        customerCount: capToCreate
       });
-      setShowAddTableModal(false);
-      setNewTableNum(prev => prev + 1);
-      setNewTableCapacity(4);
-
       setTables(prev => {
-        const index = prev.findIndex(t => t.tableNumber === created.tableNumber || (created._id && t._id === created._id));
+        const index = prev.findIndex(t => Number(t.tableNumber) === Number(created.tableNumber));
         let updatedList: SmartTable[];
         if (index >= 0) {
           updatedList = [...prev];
@@ -333,10 +411,16 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
         } else {
           updatedList = [...prev, created].sort((a, b) => a.tableNumber - b.tableNumber);
         }
-        regenerateAllQrCodes(updatedList, networkBaseUrl);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(updatedList));
         return updatedList;
       });
     } catch (err: any) {
+      // Rollback optimistic add if backend failed
+      setTables(prev => {
+        const rolledBack = prev.filter(t => Number(t.tableNumber) !== numToCreate);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(rolledBack));
+        return rolledBack;
+      });
       alert(err.message || 'Failed to add table');
     }
   };
@@ -345,39 +429,100 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     const confirmDelete = window.confirm(`Are you sure you want to delete Table ${tableNumber}? This will permanently remove its QR code and card.`);
     if (!confirmDelete) return;
 
+    // 1. INSTANT 0ms OPTIMISTIC UI REMOVAL
+    const previousTables = [...tables];
+    setTables(prev => {
+      const updatedList = prev.filter(t => t.tableNumber !== tableNumber);
+      localStorage.setItem('cakeflow_tables_cache', JSON.stringify(updatedList));
+      setNewTableNum(Math.max(...updatedList.map(t => Number(t.tableNumber) || 0), 0) + 1);
+      return updatedList;
+    });
+    if (selectedTable?.tableNumber === tableNumber) setSelectedTable(null);
+    if (qrModalTable?.tableNumber === tableNumber) setQrModalTable(null);
+    setSelectedTableNumbers(prev => prev.filter(n => n !== tableNumber));
+
+    // 2. Background API delete
     try {
       await tableApi.deleteTable(tableNumber);
-      setTables(prev => {
-        const updatedList = prev.filter(t => t.tableNumber !== tableNumber);
-        regenerateAllQrCodes(updatedList, networkBaseUrl);
-        return updatedList;
-      });
-      if (selectedTable?.tableNumber === tableNumber) setSelectedTable(null);
-      if (qrModalTable?.tableNumber === tableNumber) setQrModalTable(null);
     } catch (err: any) {
+      setTables(previousTables);
+      localStorage.setItem('cakeflow_tables_cache', JSON.stringify(previousTables));
       alert(err.message || 'Failed to delete table');
+    }
+  };
+
+  const toggleSelectTable = (tableNumber: number) => {
+    setSelectedTableNumbers(prev =>
+      prev.includes(tableNumber) ? prev.filter(n => n !== tableNumber) : [...prev, tableNumber]
+    );
+  };
+
+  const toggleSelectAllTables = (tableList: SmartTable[]) => {
+    const allNums = tableList.map(t => t.tableNumber);
+    const allSelected = allNums.length > 0 && allNums.every(n => selectedTableNumbers.includes(n));
+    if (allSelected) {
+      setSelectedTableNumbers(prev => prev.filter(n => !allNums.includes(n)));
+    } else {
+      setSelectedTableNumbers(prev => Array.from(new Set([...prev, ...allNums])));
+    }
+  };
+
+  const handleBulkDeleteTables = async () => {
+    const count = selectedTableNumbers.length;
+    if (count === 0) return;
+
+    const confirmDelete = window.confirm(
+      `Are you sure you want to permanently delete these ${count} selected table(s)?`
+    );
+    if (!confirmDelete) return;
+
+    const numsToDelete = [...selectedTableNumbers];
+    const previousTables = [...tables];
+
+    // 1. INSTANT 0ms OPTIMISTIC UI REMOVAL
+    setTables(prev => {
+      const updatedList = prev.filter(t => !numsToDelete.includes(t.tableNumber));
+      localStorage.setItem('cakeflow_tables_cache', JSON.stringify(updatedList));
+      setNewTableNum(Math.max(...updatedList.map(t => Number(t.tableNumber) || 0), 0) + 1);
+      return updatedList;
+    });
+    setSelectedTableNumbers([]);
+    if (selectedTable && numsToDelete.includes(selectedTable.tableNumber)) setSelectedTable(null);
+    if (qrModalTable && numsToDelete.includes(qrModalTable.tableNumber)) setQrModalTable(null);
+
+    // 2. Background API bulk delete (with fallback to individual deletes)
+    try {
+      await tableApi.bulkDeleteTables(numsToDelete);
+    } catch (err) {
+      try {
+        await Promise.all(numsToDelete.map(num => tableApi.deleteTable(num)));
+      } catch (fallbackErr: any) {
+        setTables(previousTables);
+        localStorage.setItem('cakeflow_tables_cache', JSON.stringify(previousTables));
+        alert(fallbackErr.message || 'Failed to bulk delete tables');
+      }
     }
   };
 
   const getStatusColor = (status: TableStatus) => {
     switch (status) {
       case 'Available':
-        return { bg: 'bg-emerald-50', border: 'border-emerald-300', text: 'text-emerald-700', badge: 'bg-emerald-500' };
+          return { bg: 'bg-white', border: 'border-[#E5E7EB]', text: 'text-[#4B5563]', badge: 'bg-[#4B5563]' };
       case 'Preparing':
       case 'Ordering':
       case 'Order Confirmed':
-        return { bg: 'bg-amber-50', border: 'border-amber-300', text: 'text-amber-700', badge: 'bg-amber-500' };
+        return { bg: 'bg-neutral-50', border: 'border-neutral-300', text: 'text-neutral-700', badge: 'bg-[#FBBF24]' };
       case 'Ready To Serve':
       case 'Serving':
-        return { bg: 'bg-sky-50', border: 'border-sky-300', text: 'text-sky-700', badge: 'bg-sky-500' };
+        return { bg: 'bg-neutral-50', border: 'border-neutral-300', text: 'text-neutral-700', badge: 'bg-[#FBBF24]' };
       case 'Payment Pending':
-        return { bg: 'bg-rose-50', border: 'border-rose-300', text: 'text-rose-700', badge: 'bg-rose-500' };
+        return { bg: 'bg-neutral-50', border: 'border-neutral-300', text: 'text-neutral-700', badge: 'bg-[#FBBF24]' };
       case 'Occupied':
-        return { bg: 'bg-red-50', border: 'border-red-300', text: 'text-red-700', badge: 'bg-red-500' };
+        return { bg: 'bg-neutral-50', border: 'border-neutral-300', text: 'text-neutral-700', badge: 'bg-[#FBBF24]' };
       case 'Completed':
       case 'Cleaning':
       default:
-        return { bg: 'bg-[#FAF8F8]', border: 'border-[#D0C0C0]', text: 'text-[#6E6262]', badge: 'bg-[#6E6262]' };
+        return { bg: 'bg-white', border: 'border-[#E5E7EB]', text: 'text-[#4B5563]', badge: 'bg-[#4B5563]' };
     }
   };
 
@@ -394,33 +539,33 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
   const filteredTables = tables.filter(t => isStatusMatch(t.status, statusFilter));
 
   return (
-    <div className="space-y-6 text-[#1E1818]">
+    <div className="space-y-4 sm:space-y-6 text-[#1F2937]">
 
-      {/* QR Phone Status Banner */}
-      {(() => {
+      {/* QR Phone Status Banner (Hidden per user preference) */}
+      {false && (() => {
         const isPhoneReady = autoDetectedUrl && !isLocalhost(autoDetectedUrl);
         const isCurrentLan = networkBaseUrl && !isLocalhost(networkBaseUrl);
         const ready = isPhoneReady || isCurrentLan;
         const displayUrl = autoDetectedUrl || networkBaseUrl;
 
         return (
-          <div className={`p-4 rounded-3xl border shadow-sm ${
+          <div className={`p-3.5 sm:p-4 rounded-2xl sm:rounded-3xl border shadow-sm ${
             ready
-              ? 'bg-emerald-50 border-emerald-300'
-              : 'bg-rose-50 border-rose-300'
+              ? 'bg-[#F3F4F6] border-[#E5E7EB]'
+              : 'bg-neutral-50 border-neutral-300'
           }`}>
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-              <div className="flex items-center gap-2.5 shrink-0">
-                <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${
-                  ready ? 'bg-emerald-500 text-white' : 'bg-[#CD0D0D] text-white'
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3">
+              <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+                <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                  ready ? 'bg-[#4C1D95] text-white' : 'bg-[#4C1D95] text-white'
                 }`}>
-                  <Wifi className="w-4 h-4" />
+                  <Wifi className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </div>
                 <div>
-                  <p className={`text-xs font-extrabold uppercase tracking-wider ${ready ? 'text-emerald-800' : 'text-[#CD0D0D]'}`}>
+                  <p className={`text-[11px] sm:text-xs font-extrabold uppercase tracking-wider ${ready ? 'text-[#4C1D95]' : 'text-[#4C1D95]'}`}>
                     {ready ? '✅ Phone QR Ready' : '❌ QR Not Phone-Ready'}
                   </p>
-                  <p className="text-[10px] text-[#6E6262]">
+                  <p className="text-[9px] sm:text-[10px] text-[#4B5563]">
                     {ready ? 'Phone scan will open direct menu' : 'Phone scan -> copy text only'}
                   </p>
                 </div>
@@ -434,34 +579,34 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                       value={networkUrlInput}
                       onChange={(e) => setNetworkUrlInput(e.target.value)}
                       placeholder="http://192.168.x.x:5173"
-                      className="flex-1 min-w-[160px] bg-white border border-[#D0C0C0] rounded-xl px-3 py-2 text-xs text-[#1E1818] font-mono focus:outline-none focus:border-[#CD0D0D]"
+                      className="flex-1 min-w-[140px] bg-white border border-[#E5E7EB] rounded-xl px-3 py-1.5 sm:py-2 text-xs text-[#1F2937] font-mono focus:outline-none focus:border-[#4C1D95]"
                       onKeyDown={(e) => e.key === 'Enter' && applyNetworkUrl(networkUrlInput, tables)}
                     />
                     <button
                       onClick={() => applyNetworkUrl(networkUrlInput, tables)}
-                      className="px-4 py-2 rounded-xl bg-[#CD0D0D] text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shadow-sm"
+                      className="px-3.5 py-1.5 sm:py-2 rounded-xl bg-[#4C1D95] text-white text-xs font-bold flex items-center gap-1 whitespace-nowrap shadow-sm cursor-pointer"
                     >
                       <Check className="w-3.5 h-3.5" /> Save
                     </button>
                     <button
                       onClick={() => setEditingNetworkUrl(false)}
-                      className="px-3 py-2 rounded-xl bg-[#FAF8F8] border border-[#D0C0C0] text-[#6E6262] text-xs"
+                      className="px-3 py-1.5 sm:py-2 rounded-xl bg-white border border-[#E5E7EB] text-[#4B5563] text-xs cursor-pointer"
                     >
                       Cancel
                     </button>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-xs px-3 py-1.5 rounded-xl border flex-1 truncate max-w-xs bg-white border-[#D0C0C0] text-[#1E1818]">
+                    <span className="font-mono text-xs px-2.5 sm:px-3 py-1.5 rounded-xl border flex-1 truncate max-w-xs bg-white border-[#E5E7EB] text-[#1F2937]">
                       {ready ? `${displayUrl}/table/` : 'localhost'}
-                      {ready && <span className="text-[#CD0D0D] font-bold">N</span>}
+                      {ready && <span className="text-[#4C1D95] font-bold">N</span>}
                     </span>
                     {ready && (
                       <button
                         onClick={() => { setNetworkUrlInput(networkBaseUrl); setEditingNetworkUrl(true); }}
-                        className="px-3 py-1.5 rounded-xl bg-white border border-[#D0C0C0] text-[#6E6262] text-xs flex items-center gap-1 cursor-pointer"
+                        className="px-2.5 py-1.5 rounded-xl bg-white border border-[#E5E7EB] text-[#4B5563] text-xs flex items-center gap-1 cursor-pointer"
                       >
-                        <Edit2 className="w-3 h-3 text-[#CD0D0D]" /> Edit
+                        <Edit2 className="w-3 h-3 text-[#4C1D95]" /> Edit
                       </button>
                     )}
                   </div>
@@ -476,9 +621,9 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                     setApplyingIp(false);
                   }}
                   disabled={applyingIp}
-                  className="px-5 py-2.5 rounded-xl bg-[#CD0D0D] hover:bg-[#A60A0A] text-white text-xs font-extrabold flex items-center gap-2 whitespace-nowrap shadow-md cursor-pointer disabled:opacity-60"
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-[#4C1D95] hover:bg-[#5B21B6] text-white text-xs font-extrabold flex items-center justify-center gap-2 whitespace-nowrap shadow-md cursor-pointer disabled:opacity-60"
                 >
-                  <Wifi className="w-4 h-4" />
+                  <Wifi className="w-3.5 h-3.5" />
                   {applyingIp ? 'Detecting...' : '🔧 Fix QR Now'}
                 </button>
               )}
@@ -488,54 +633,29 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
       })()}
 
       {/* Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 rounded-3xl border border-[#D0C0C0] shadow-sm">
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 sm:gap-4 bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-[#E5E7EB] shadow-sm">
         <div>
-          <div className="flex items-center gap-2.5">
-            <div className="p-2.5 rounded-2xl bg-[#CD0D0D]/10 text-[#CD0D0D]">
-              <QrCode className="w-6 h-6 animate-pulse" />
+          <div className="flex items-center gap-3.5">
+            <div className="p-3 sm:p-3.5 rounded-2xl bg-[#4C1D95] text-white shadow-md shadow-[#4C1D95]/20 shrink-0 flex items-center justify-center">
+              <QrCode size={24} />
             </div>
             <div>
-              <h2 className="text-xl font-extrabold text-[#1E1818] flex items-center gap-2">
-                Smart Table & QR Code System
-                <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 border border-emerald-500/30">
+              <h2 className="text-base sm:text-lg md:text-xl font-extrabold text-[#1F2937] flex items-center flex-wrap gap-1.5 sm:gap-2">
+                <span>Smart Table & QR Code System</span>
+                <span className="text-[10px] sm:text-xs font-bold px-2 sm:px-2.5 py-0.5 rounded-full bg-[#4C1D95]/10 text-neutral-700 border border-[#4C1D95]/30">
                   {tables.length} Tables Active
                 </span>
               </h2>
-              <p className="text-xs text-[#6E6262]">Automated QR Ordering, Live Status Floor Layout & Instant Socket.IO Sync</p>
+              <p className="text-[11px] sm:text-xs text-[#4B5563] leading-tight">Automated QR Ordering, Live Status Floor Layout & Instant Sync</p>
             </div>
           </div>
         </div>
 
-        {/* View Switcher & Actions */}
-        <div className="flex items-center gap-3">
-          <div className="flex bg-[#FAF8F8] p-1 rounded-2xl border border-[#D0C0C0]">
-            <button
-              onClick={() => setActiveTab('floor')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeTab === 'floor' 
-                  ? 'bg-[#CD0D0D] text-white shadow-md' 
-                  : 'text-[#6E6262] hover:text-[#1E1818]'
-              }`}
-            >
-              <Layers className="w-4 h-4" />
-              Interactive Floor
-            </button>
-            <button
-              onClick={() => setActiveTab('cards')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer ${
-                activeTab === 'cards' 
-                  ? 'bg-[#CD0D0D] text-white shadow-md' 
-                  : 'text-[#6E6262] hover:text-[#1E1818]'
-              }`}
-            >
-              <QrCode className="w-4 h-4" />
-              Table Cards & QR
-            </button>
-          </div>
-
+        {/* Actions */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 w-full xl:w-auto">
           <button
             onClick={() => setShowAddTableModal(true)}
-            className="px-4 py-2.5 rounded-2xl bg-[#CD0D0D] hover:bg-[#A60A0A] text-white text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md cursor-pointer"
+            className="w-full sm:w-auto px-4 py-2 sm:py-2.5 rounded-2xl bg-[#4C1D95] hover:bg-[#5B21B6] text-white text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 shadow-md cursor-pointer whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
             Add Table
@@ -545,266 +665,195 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
 
       {/* VIEW 1: INTERACTIVE RESTAURANT FLOOR PLAN */}
       {activeTab === 'floor' && (
-        <div className="bg-white p-6 rounded-3xl border border-[#D0C0C0] shadow-sm relative overflow-hidden space-y-4">
-          <div className="flex items-center justify-between">
+        <div className="bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-[#E5E7EB] shadow-sm relative overflow-hidden space-y-3 sm:space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h3 className="text-lg font-extrabold text-[#1E1818] flex items-center gap-2">
-                Visual Restaurant Floor Map
-                <span className="text-xs text-[#CD0D0D] font-mono bg-[#CD0D0D]/10 px-2 py-0.5 rounded-md border border-[#CD0D0D]/20">
+              <h3 className="text-base sm:text-lg font-extrabold text-[#1F2937] flex items-center gap-2">
+                <span>Visual Restaurant Floor Map</span>
+                <span className="text-[10px] sm:text-xs text-[#4C1D95] font-mono bg-[#4C1D95]/10 px-2 py-0.5 rounded-md border border-[#4C1D95]/20">
                   LIVE SYNC
                 </span>
               </h3>
-              <p className="text-xs text-[#6E6262]">Click any dining table to view live order details, change status, or download QR Code</p>
+              <p className="text-[11px] sm:text-xs text-[#4B5563]">Live dining table status, capacity, and current bill overview</p>
             </div>
+
+            {/* Bulk Selection Controls */}
+            {filteredTables.length > 0 && (
+              <div className="flex items-center flex-wrap gap-2">
+                <label className="px-3 py-1.5 rounded-xl bg-[#F9FAFB] hover:bg-violet-50 border border-[#E5E7EB] text-xs font-extrabold text-[#1F2937] flex items-center gap-2 cursor-pointer select-none shadow-2xs transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={filteredTables.length > 0 && filteredTables.every(t => selectedTableNumbers.includes(t.tableNumber))}
+                    onChange={() => toggleSelectAllTables(filteredTables)}
+                    className="w-4 h-4 accent-[#4C1D95] rounded cursor-pointer"
+                  />
+                  <span>
+                    {filteredTables.every(t => selectedTableNumbers.includes(t.tableNumber))
+                      ? 'Deselect All'
+                      : `Select All (${filteredTables.length})`}
+                  </span>
+                </label>
+
+                {selectedTableNumbers.length > 0 && (
+                  <>
+                    <button
+                      onClick={handleBulkDeleteTables}
+                      className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Selected ({selectedTableNumbers.length})</span>
+                    </button>
+                    <button
+                      onClick={() => setSelectedTableNumbers([])}
+                      className="px-3 py-1.5 rounded-xl bg-white hover:bg-gray-50 text-[#4B5563] border border-[#E5E7EB] text-xs font-bold transition-all cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 2D Floor Layout Grid */}
-          <div className="min-h-[420px] bg-[#FAF8F8] rounded-2xl border border-[#D0C0C0] p-8 relative flex flex-col justify-between">
-            <div className="absolute top-4 left-8 text-[10px] font-extrabold tracking-widest text-[#6E6262] uppercase flex items-center gap-2">
-              <Utensils className="w-3.5 h-3.5 text-[#CD0D0D]" /> Main Kitchen & Counter Zone
-            </div>
-            <div className="absolute bottom-4 right-8 text-[10px] font-extrabold tracking-widest text-[#6E6262] uppercase">
-              🚪 Main Entrance
+          <div className="min-h-[340px] sm:min-h-[420px] bg-white rounded-2xl border border-[#E5E7EB] p-4 sm:p-8 relative flex flex-col justify-between">
+            <div className="text-[10px] font-extrabold tracking-widest text-[#4B5563] uppercase flex items-center gap-1.5 mb-3 sm:mb-0">
+              <Utensils className="w-3.5 h-3.5 text-[#4C1D95]" /> Main Kitchen & Counter Zone
             </div>
 
             {/* Tables Grid Layout */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6 my-auto pt-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5 sm:gap-6 my-auto py-3 sm:pt-6">
               {filteredTables.map((table) => {
                 const style = getStatusColor(table.status);
+                const isSelected = selectedTableNumbers.includes(table.tableNumber);
                 return (
                   <div
                     key={table.tableNumber}
-                    onClick={() => setSelectedTable(table)}
-                    className={`p-5 rounded-2xl border transition-all cursor-pointer group relative hover:scale-[1.02] shadow-sm ${style.bg} ${style.border}`}
+                    onClick={() => toggleSelectTable(table.tableNumber)}
+                    className={`p-3.5 sm:p-5 rounded-2xl border transition-all group relative shadow-sm cursor-pointer ${
+                      isSelected
+                        ? 'bg-violet-50/50 border-[#4C1D95] ring-2 ring-[#4C1D95]/20'
+                        : `${style.bg} ${style.border}`
+                    }`}
                   >
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-xs font-black tracking-wider text-[#1E1818] uppercase bg-white px-3 py-1 rounded-xl border border-[#D0C0C0] flex items-center gap-1.5 shadow-xs">
-                        <span className={`w-2 h-2 rounded-full ${style.badge} animate-ping`} />
-                        TABLE {table.tableNumber}
-                      </span>
-                      <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border ${style.text} ${style.bg} ${style.border}`}>
-                        {table.status}
-                      </span>
-                    </div>
-
-                    <div className="space-y-2 text-xs">
-                      <div className="flex justify-between items-center text-[#1E1818]">
-                        <span className="flex items-center gap-1 text-[#6E6262]">
-                          <Users className="w-3.5 h-3.5" /> Capacity:
+                    <div className="flex items-center justify-between mb-2.5 sm:mb-3">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectTable(table.tableNumber)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-4 h-4 accent-[#4C1D95] rounded cursor-pointer"
+                          title={`Select Table ${table.tableNumber}`}
+                        />
+                        <span className="text-xs font-black tracking-wider text-[#1F2937] uppercase bg-white px-2.5 sm:px-3 py-1 rounded-xl border border-[#E5E7EB] flex items-center gap-1.5 shadow-xs">
+                          <span className={`w-2 h-2 rounded-full ${style.badge} animate-ping`} />
+                          TABLE {table.tableNumber}
                         </span>
-                        <span className="font-bold">{table.capacity || table.customerCount || 4} Members</span>
                       </div>
-
-                      {table.currentOrderNumber && (
-                        <div className="flex justify-between items-center text-[#1E1818]">
-                          <span className="flex items-center gap-1 text-[#6E6262]">
-                            <Clock className="w-3.5 h-3.5" /> Order:
-                          </span>
-                          <span className="font-mono font-bold text-[#CD0D0D]">{table.currentOrderNumber}</span>
-                        </div>
-                      )}
-
-                      <div className="flex justify-between items-center text-[#1E1818]">
-                        <span className="flex items-center gap-1 text-[#6E6262]">
-                          <DollarSign className="w-3.5 h-3.5 text-emerald-600" /> Current Bill:
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-[10px] sm:text-[11px] font-extrabold px-2 sm:px-2.5 py-0.5 rounded-full border ${style.text} ${style.bg} ${style.border}`}>
+                          {table.status}
                         </span>
-                        <span className="font-black text-emerald-700">₹{table.currentBill || 0}</span>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-[#D0C0C0]/60 flex items-center justify-between text-[11px] text-[#6E6262] group-hover:text-[#CD0D0D] transition-colors">
-                      <span className="flex items-center gap-1">
-                        <QrCode className="w-3.5 h-3.5" /> Scan URL: /table/{table.tableNumber}
-                      </span>
-                      <Eye className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* VIEW 2: SMART TABLE CARDS LIST */}
-      {activeTab === 'cards' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredTables.map((table) => {
-            const style = getStatusColor(table.status);
-            const qrUrl = qrCodeDataUrls[table.tableNumber] || table.qrCodeDataUrl;
-
-            return (
-              <div 
-                key={table.tableNumber}
-                className="bg-white p-5 rounded-3xl border border-[#D0C0C0] flex flex-col justify-between hover:border-[#CD0D0D] transition-all shadow-sm group"
-              >
-                <div>
-                  <div className="flex items-start justify-between gap-3 mb-4">
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-1 w-full">
-                        <div className="flex items-center gap-2">
-                          <span className="text-lg font-black text-[#1E1818]">TABLE {table.tableNumber}</span>
-                          <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${style.text} ${style.bg} ${style.border}`}>
-                            {table.status}
-                          </span>
-                        </div>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleDeleteTable(table.tableNumber);
                           }}
-                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 transition-colors cursor-pointer"
                           title={`Delete Table ${table.tableNumber}`}
+                          className="p-1.5 rounded-lg text-[#9CA3AF] hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                      <p className="text-xs text-[#6E6262] font-mono">ID: {table.qrCodeId}</p>
                     </div>
 
-                    {qrUrl ? (
-                      <div 
-                        onClick={() => setQrModalTable(table)}
-                        className="w-16 h-16 bg-white p-1 rounded-xl shadow-sm cursor-pointer hover:scale-105 transition-transform flex items-center justify-center border border-[#D0C0C0]"
-                        title="Click to view full printable QR card"
-                      >
-                        <img src={qrUrl} alt={`Table ${table.tableNumber} QR`} className="w-full h-full object-contain" />
+                    <div className="space-y-1.5 sm:space-y-2 text-xs">
+                      <div className="flex justify-between items-center text-[#1F2937]">
+                        <span className="flex items-center gap-1 text-[#4B5563] text-[11px] sm:text-xs">
+                          <Users className="w-3.5 h-3.5" /> Capacity:
+                        </span>
+                        <span className="font-bold text-[11px] sm:text-xs">{table.capacity || table.customerCount || 4} Members</span>
                       </div>
-                    ) : (
-                      <div className="w-16 h-16 bg-[#FAF8F8] rounded-xl flex items-center justify-center text-[#6E6262]">
-                        <QrCode className="w-6 h-6 animate-pulse" />
+
+                      {table.currentOrderNumber && (
+                        <div className="flex justify-between items-center text-[#1F2937]">
+                          <span className="flex items-center gap-1 text-[#4B5563] text-[11px] sm:text-xs">
+                            <Clock className="w-3.5 h-3.5" /> Order:
+                          </span>
+                          <span className="font-mono font-bold text-[#4C1D95] text-[11px] sm:text-xs">{table.currentOrderNumber}</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between items-center text-[#1F2937]">
+                        <span className="flex items-center gap-1 text-[#4B5563] text-[11px] sm:text-xs">
+                          <DollarSign className="w-3.5 h-3.5 text-[#4C1D95]" /> Current Bill:
+                        </span>
+                        <span className="font-black text-neutral-700 text-[11px] sm:text-xs">₹{table.currentBill || 0}</span>
                       </div>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-xs bg-[#FAF8F8] p-3 rounded-2xl border border-[#D0C0C0] mb-4">
-                    <div>
-                      <span className="text-[#6E6262] text-[10px]">Active Order:</span>
-                      <p className="font-bold text-[#1E1818]">{table.currentOrderNumber || 'None'}</p>
-                    </div>
-                    <div>
-                      <span className="text-[#6E6262] text-[10px]">Guests / Members:</span>
-                      <p className="font-bold text-[#1E1818]">{table.capacity || table.customerCount || 2} Members</p>
-                    </div>
-                    <div>
-                      <span className="text-[#6E6262] text-[10px]">Current Bill:</span>
-                      <p className="font-extrabold text-emerald-700">₹{table.currentBill || 0}</p>
-                    </div>
-                    <div>
-                      <span className="text-[#6E6262] text-[10px]">Payment:</span>
-                      <p className={`font-bold ${table.paymentStatus === 'Paid' ? 'text-emerald-700' : 'text-[#CD0D0D]'}`}>
-                        {table.paymentStatus || 'Unpaid'}
-                      </p>
                     </div>
                   </div>
+                );
+              })}
+            </div>
 
-                  <div className="mb-4">
-                    <label className="text-[10px] text-[#6E6262] font-bold block mb-1">Quick Status Override:</label>
-                    <select
-                      value={table.status}
-                      onChange={(e) => handleUpdateStatus(table.tableNumber, e.target.value as TableStatus)}
-                      className="w-full bg-[#FAF8F8] border border-[#D0C0C0] rounded-xl px-3 py-2 text-xs font-bold text-[#1E1818] focus:outline-none focus:border-[#CD0D0D] cursor-pointer"
-                    >
-                      <option value="Available">Available (Green)</option>
-                      <option value="Ordering">Ordering (Yellow)</option>
-                      <option value="Order Confirmed">Order Confirmed (Yellow)</option>
-                      <option value="Preparing">Preparing (Yellow)</option>
-                      <option value="Ready To Serve">Ready To Serve (Blue)</option>
-                      <option value="Serving">Serving (Blue)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 pt-3 border-t border-[#E8E0E0] text-xs">
-                  <button
-                    onClick={() => setQrModalTable(table)}
-                    className="px-3 py-2 rounded-xl bg-[#FAF8F8] hover:bg-white border border-[#D0C0C0] text-[#1E1818] font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <QrCode className="w-3.5 h-3.5 text-[#CD0D0D]" />
-                    QR Card
-                  </button>
-
-                  <button
-                    onClick={() => handleDownloadQr(table)}
-                    className="px-3 py-2 rounded-xl bg-[#FAF8F8] hover:bg-white border border-[#D0C0C0] text-[#1E1818] font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5 text-emerald-600" />
-                    PNG
-                  </button>
-
-                  <button
-                    onClick={() => handlePrintQr(table)}
-                    className="px-3 py-2 rounded-xl bg-[#FAF8F8] hover:bg-white border border-[#D0C0C0] text-[#1E1818] font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Printer className="w-3.5 h-3.5 text-sky-600" />
-                    Print Standee
-                  </button>
-
-                  <button
-                    onClick={() => handleRegenerateQr(table.tableNumber)}
-                    className="px-3 py-2 rounded-xl bg-[#FAF8F8] hover:bg-white border border-[#D0C0C0] text-[#1E1818] font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-[#CD0D0D]" />
-                    Refresh
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+            <div className="text-[10px] font-extrabold tracking-widest text-[#4B5563] uppercase text-right mt-2 sm:mt-0">
+              🚪 Main Entrance
+            </div>
+          </div>
         </div>
       )}
 
-      {/* MODAL: ADD NEW TABLE */}
       {showAddTableModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-[#D0C0C0] w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl relative text-[#1E1818]">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white border border-[#E5E7EB] w-full max-w-md rounded-2xl sm:rounded-3xl p-5 sm:p-6 space-y-3.5 sm:space-y-4 shadow-2xl relative text-[#1F2937]">
             <button
               onClick={() => setShowAddTableModal(false)}
-              className="absolute top-4 right-4 text-[#6E6262] hover:text-[#1E1818] p-1.5 rounded-full bg-[#FAF8F8] cursor-pointer"
+              className="absolute top-3.5 sm:top-4 right-3.5 sm:right-4 text-[#4B5563] hover:text-[#1F2937] p-1.5 rounded-full bg-white cursor-pointer"
             >
               ✕
             </button>
 
-            <h3 className="text-lg font-extrabold text-[#1E1818] flex items-center gap-2">
-              <Plus className="w-5 h-5 text-[#CD0D0D]" /> Expand Dining Floor (Add Table)
+            <h3 className="text-base sm:text-lg font-extrabold text-[#1F2937] flex items-center gap-2">
+              <Plus className="w-5 h-5 text-[#4C1D95]" /> Expand Dining Floor (Add Table)
             </h3>
-            <p className="text-xs text-[#6E6262]">Configure new dining table and automatically generate dedicated QR code.</p>
+            <p className="text-xs text-[#4B5563]">Configure new dining table and automatically generate dedicated QR code.</p>
 
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-[#6E6262] font-bold block mb-1">Table Number:</label>
+                <label className="text-xs text-[#4B5563] font-bold block mb-1">Table Number:</label>
                 <input
                   type="number"
                   min="1"
                   value={newTableNum}
                   onChange={(e) => setNewTableNum(parseInt(e.target.value) || 1)}
-                  className="w-full bg-[#FAF8F8] border border-[#D0C0C0] rounded-xl px-3 py-2 text-sm text-[#1E1818] focus:border-[#CD0D0D] focus:outline-none"
+                  className="w-full bg-white border border-[#E5E7EB] rounded-xl px-3 py-2 text-sm text-[#1F2937] focus:border-[#4C1D95] focus:outline-none"
                 />
               </div>
 
               <div>
-                <label className="text-xs text-[#6E6262] font-bold block mb-1">Guest / Member Capacity:</label>
+                <label className="text-xs text-[#4B5563] font-bold block mb-1">Guest / Member Capacity:</label>
                 <input
                   type="number"
                   min="1"
                   value={newTableCapacity}
                   onChange={(e) => setNewTableCapacity(parseInt(e.target.value) || 1)}
                   placeholder="e.g. 10"
-                  className="w-full bg-[#FAF8F8] border border-[#D0C0C0] rounded-xl px-3 py-2 text-sm text-[#1E1818] focus:border-[#CD0D0D] focus:outline-none"
+                  className="w-full bg-white border border-[#E5E7EB] rounded-xl px-3 py-2 text-sm text-[#1F2937] focus:border-[#4C1D95] focus:outline-none"
                 />
               </div>
             </div>
 
-            <div className="flex gap-3 pt-3">
+            <div className="flex gap-2.5 sm:gap-3 pt-2 sm:pt-3">
               <button
                 onClick={handleAddNewTable}
-                className="flex-1 py-3 rounded-2xl bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-extrabold text-xs transition-all shadow-md cursor-pointer"
+                className="flex-1 py-2.5 sm:py-3 rounded-2xl bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold text-xs transition-all shadow-md cursor-pointer"
               >
                 Create Table & QR
               </button>
               <button
                 onClick={() => setShowAddTableModal(false)}
-                className="px-5 py-3 rounded-2xl bg-[#FAF8F8] text-[#6E6262] font-bold text-xs border border-[#D0C0C0] cursor-pointer"
+                className="px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl bg-white text-[#4B5563] font-bold text-xs border border-[#E5E7EB] cursor-pointer"
               >
                 Cancel
               </button>
@@ -812,6 +861,7 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
           </div>
         </div>
       )}
+
       {/* MODAL: QR CODE STANDEE PREVIEW & DETAILS */}
       {(qrModalTable || selectedTable) && (() => {
         const table = qrModalTable || selectedTable!;
@@ -819,37 +869,37 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
         const targetUrl = `${networkBaseUrl.replace(/\/$/, '')}/table/${table.tableNumber}`;
 
         return (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white border border-[#D0C0C0] w-full max-w-sm rounded-3xl p-6 space-y-5 shadow-2xl relative animate-scale-in text-[#1E1818]">
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <div className="bg-white border border-[#E5E7EB] w-full max-w-sm rounded-2xl sm:rounded-3xl p-4 sm:p-6 space-y-4 sm:space-y-5 shadow-2xl relative animate-scale-in text-[#1F2937] my-auto">
               {/* Close Button */}
               <button
                 onClick={() => {
                   setQrModalTable(null);
                   setSelectedTable(null);
                 }}
-                className="absolute top-4 right-4 text-[#6E6262] hover:text-[#1E1818] p-1.5 rounded-full bg-[#FAF8F8] cursor-pointer"
+                className="absolute top-3 sm:top-4 right-3 sm:right-4 text-[#4B5563] hover:text-[#1F2937] p-1.5 rounded-full bg-white cursor-pointer z-10"
               >
                 ✕
               </button>
 
               {/* QR Card Printable Standee Layout */}
-              <div id={`qr-standee-card-${table.tableNumber}`} className="bg-[#FAF8F8] border border-[#D0C0C0] p-6 rounded-2xl text-center space-y-4 shadow-sm">
-                <div className="space-y-2">
-                  <span className="bg-[#CD0D0D] text-white text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider">
-                    CakeFlow AI Smart Menu
+              <div id={`qr-standee-card-${table.tableNumber}`} className="bg-white border border-[#E5E7EB] p-4 sm:p-6 rounded-xl sm:rounded-2xl text-center space-y-3 sm:space-y-4 shadow-sm">
+                <div className="space-y-1.5 sm:space-y-2">
+                  <span className="bg-[#4C1D95] text-white text-[9px] sm:text-[10px] font-black px-2.5 sm:px-3 py-0.5 sm:py-1 rounded-full uppercase tracking-wider">
+                    VPN Restaurant Smart Menu
                   </span>
-                  <h3 className="text-xl font-black text-[#1E1818] tracking-tight pt-1">
+                  <h3 className="text-lg sm:text-xl font-black text-[#1F2937] tracking-tight pt-0.5">
                     TABLE {table.tableNumber}
                   </h3>
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-[#D0C0C0] rounded-full text-xs font-extrabold text-[#1E1818]">
-                    <Users className="w-3.5 h-3.5 text-[#CD0D0D]" />
+                  <div className="inline-flex items-center gap-1 px-2.5 sm:px-3 py-0.5 sm:py-1 bg-white border border-[#E5E7EB] rounded-full text-[11px] sm:text-xs font-extrabold text-[#1F2937]">
+                    <Users className="w-3.5 h-3.5 text-[#4C1D95]" />
                     <span>Capacity: {table.capacity || table.customerCount || 2} Members</span>
                   </div>
-                  <p className="text-xs text-[#6E6262] font-semibold">Scan QR Code to View Menu & Place Order</p>
+                  <p className="text-[11px] sm:text-xs text-[#4B5563] font-semibold">Scan QR Code to View Menu & Place Order</p>
                 </div>
 
                 {/* Big QR Code Image */}
-                <div className="w-52 h-52 mx-auto bg-white p-3 rounded-2xl border border-[#D0C0C0] shadow-md flex items-center justify-center">
+                <div className="w-44 h-44 sm:w-52 sm:h-52 mx-auto bg-white p-2.5 sm:p-3 rounded-2xl border border-[#E5E7EB] shadow-md flex items-center justify-center">
                   {qrUrl ? (
                     <img 
                       src={qrUrl} 
@@ -857,18 +907,18 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
                       className="w-full h-full object-contain"
                     />
                   ) : (
-                    <div className="text-center text-[#6E6262] space-y-2">
-                      <QrCode className="w-12 h-12 mx-auto text-[#CD0D0D] animate-pulse" />
+                    <div className="text-center text-[#4B5563] space-y-2">
+                      <QrCode className="w-10 h-10 sm:w-12 sm:h-12 mx-auto text-[#4C1D95] animate-pulse" />
                       <p className="text-xs font-bold">Generating QR Code...</p>
                     </div>
                   )}
                 </div>
 
-                <div className="space-y-1 pt-1">
-                  <p className="text-[10px] text-[#6E6262] font-mono break-all bg-white px-2.5 py-1 rounded-xl border border-[#D0C0C0]">
+                <div className="space-y-1 pt-0.5">
+                  <p className="text-[9px] sm:text-[10px] text-[#4B5563] font-mono break-all bg-white px-2 sm:px-2.5 py-1 rounded-xl border border-[#E5E7EB]">
                     {targetUrl}
                   </p>
-                  <p className="text-[9px] text-[#6E6262] font-semibold">
+                  <p className="text-[9px] text-[#4B5563] font-semibold">
                     No App Download Required • Instant Ordering
                   </p>
                 </div>
@@ -878,25 +928,25 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => handleDownloadQr(table)}
-                  className="py-3 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-extrabold rounded-2xl text-xs flex items-center justify-center gap-1.5 shadow-md transition-all cursor-pointer"
+                  className="py-2.5 sm:py-3 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl sm:rounded-2xl text-xs flex items-center justify-center gap-1.5 shadow-md transition-all cursor-pointer"
                 >
-                  <Download size={15} />
+                  <Download size={14} />
                   <span>Download PNG</span>
                 </button>
                 <button
                   onClick={() => handlePrintQr(table)}
-                  className="py-3 bg-white border border-[#D0C0C0] hover:border-[#CD0D0D] hover:bg-[#FAF8F8] text-[#1E1818] font-extrabold rounded-2xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                  className="py-2.5 sm:py-3 bg-white border border-[#E5E7EB] hover:border-[#4C1D95] hover:bg-white text-[#1F2937] font-extrabold rounded-xl sm:rounded-2xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
                 >
-                  <Printer size={15} className="text-[#CD0D0D]" />
+                  <Printer size={14} className="text-[#4C1D95]" />
                   <span>Print Standee</span>
                 </button>
               </div>
 
               <button
                 onClick={() => handleDeleteTable(table.tableNumber)}
-                className="w-full py-2.5 bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 font-extrabold rounded-2xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                className="w-full py-2 sm:py-2.5 bg-neutral-50 hover:bg-neutral-600 text-neutral-600 hover:text-white border border-neutral-200 font-extrabold rounded-xl sm:rounded-2xl text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
               >
-                <Trash2 size={15} />
+                <Trash2 size={14} />
                 <span>Delete Table {table.tableNumber}</span>
               </button>
             </div>
@@ -906,3 +956,5 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
     </div>
   );
 };
+
+

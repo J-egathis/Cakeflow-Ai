@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Order } from '../types';
-import { orderApi, tableApi } from '../services/api';
+import { orderApi, tableApi, systemApi } from '../services/api';
+import QRCode from 'qrcode';
 import { 
-  Receipt, Printer, CheckCircle, CreditCard, DollarSign, 
+  X, Receipt, Printer, CheckCircle, CreditCard, DollarSign, 
   Smartphone, Filter, RefreshCw, LogOut, Tag, AlertTriangle 
 } from 'lucide-react';
 import { SmartReceiptModal } from '../components/SmartReceiptModal';
@@ -12,7 +13,16 @@ interface BillingViewProps {
 }
 
 export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
+  
   const [unpaidOrders, setUnpaidOrders] = useState<Order[]>([]);
+  
+  const [gstRate, setGstRate] = useState<number>(() => {
+    const saved = localStorage.getItem('admin_gst_rate');
+    return saved ? parseFloat(saved) : 5;
+  });
+  const [showGstModal, setShowGstModal] = useState(false);
+  const [tempGstInput, setTempGstInput] = useState(String(gstRate));
+
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card'>('cash');
@@ -39,9 +49,72 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
     fetchUnpaidOrders();
   }, []);
 
-  const handlePrintReceipt = (order: Order) => {
+  const handleSaveGstRate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseFloat(tempGstInput);
+    if (!isNaN(parsed) && parsed >= 0) {
+      setGstRate(parsed);
+      localStorage.setItem('admin_gst_rate', String(parsed));
+      try {
+        await systemApi.updateGst(parsed);
+      } catch (err) {
+        console.error('Failed to update backend GST:', err);
+      }
+      setShowGstModal(false);
+      setToastMessage(`✅ GST Tax Rate updated to ${parsed}%! Applied to all receipts.`);
+      setTimeout(() => setToastMessage(''), 3000);
+    }
+  };
+
+  const handlePrintReceipt = async (order: Order) => {
+    if (!order) return;
+
+    let qrCodeUrl = '';
+    try {
+      const invoiceUrl = `${window.location.origin}/receipt/${order._id}`;
+      qrCodeUrl = await QRCode.toDataURL(invoiceUrl, { width: 150, margin: 1, color: { dark: '#4C1D95', light: '#FFFFFF' } });
+    } catch (e) {}
+
+    const currentGlobalGst = parseFloat(localStorage.getItem('admin_gst_rate') || String(gstRate) || '5');
+    const itemsSubtotal = (order.items && order.items.length > 0)
+      ? order.items.reduce((sum: number, item: any) => {
+          const price = Number(item.price ?? item.product?.price ?? 0);
+          const qty = Number(item.quantity ?? 1);
+          return sum + price * qty;
+        }, 0)
+      : Number(order.totalAmount || 0);
+    const activeGstRate =
+      order.gstRate !== null && order.gstRate !== undefined && !isNaN(Number(order.gstRate))
+        ? Number(order.gstRate)
+        : (itemsSubtotal > 0 && Number(order.totalAmount) > itemsSubtotal + 0.01
+            ? Math.round(((Number(order.totalAmount) - itemsSubtotal) / itemsSubtotal) * 1000) / 10
+            : currentGlobalGst);
+    const halfGstRate = activeGstRate / 2;
+    const subtotal = itemsSubtotal;
+    const totalGstAmount = subtotal * (activeGstRate / 100);
+    const cgst = totalGstAmount / 2;
+    const sgst = totalGstAmount / 2;
+    const grandTotal = subtotal + totalGstAmount;
+
+    const itemsHtml = order.items?.map((item: any) => {
+      const pName = item.product?.name || item.name || 'Food Item';
+      const price = item.price || item.product?.price || 0;
+      return `
+        <div style="margin-bottom: 5px;">
+          <div style="display: flex; justify-content: space-between; font-size: 11px;">
+            <span style="font-weight: 600;">${item.quantity}x ${pName}</span>
+            <span style="font-family: monospace; font-weight: bold;">₹${price * item.quantity}</span>
+          </div>
+          ${item.instructions ? `<div style="font-size: 9px; color: #4C1D95; margin-top: 1px;">📌 Note: "${item.instructions}"</div>` : ''}
+        </div>
+      `;
+    }).join('') || '';
+
     const printWindow = window.open('', '_blank', 'width=450,height=700');
-    if (!printWindow) return;
+    if (!printWindow) {
+      alert('Please allow popup windows for this site to print thermal receipts.');
+      return;
+    }
 
     printWindow.document.write(`
       <!DOCTYPE html>
@@ -49,17 +122,178 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
         <head>
           <title>Receipt Table ${order.tableNumber} #${order._id.slice(-6)}</title>
           <style>
-            @page { size: 80mm auto; margin: 0; }
-            body { font-family: sans-serif; width: 78mm; margin: 0 auto; padding: 10px 8px; color: #1E1818; }
-            .header { text-align: center; border-bottom: 1.5px dashed #CD0D0D; padding-bottom: 8px; margin-bottom: 8px; }
-            .header h2 { margin: 0; color: #CD0D0D; font-size: 16px; font-weight: 900; }
+            @page {
+              size: 80mm auto;
+              margin: 0mm;
+            }
+            body {
+              font-family: 'Courier New', Courier, monospace, monospace;
+              width: 72mm;
+              max-width: 72mm;
+              margin: 0 auto;
+              padding: 4px 2px;
+              color: #000;
+              background: #fff;
+              box-sizing: border-box;
+              -webkit-print-color-adjust: exact;
+            }
+            .header {
+              text-align: center;
+              border-bottom: 1px dashed #000;
+              padding-bottom: 6px;
+              margin-bottom: 6px;
+            }
+            .header h2 {
+              margin: 0;
+              color: #000;
+              font-size: 15px;
+              font-weight: 900;
+            }
+            .header .subtitle {
+              font-size: 10px;
+              color: #222;
+              font-weight: 700;
+            }
+            .header .title-tag {
+              font-size: 11px;
+              font-weight: 900;
+              color: #000;
+              margin-top: 4px;
+              letter-spacing: 0.5px;
+            }
+            .status-banner {
+              border: 1px solid #000;
+              color: #000;
+              padding: 4px 6px;
+              font-size: 10px;
+              font-weight: 800;
+              display: flex;
+              justify-content: space-between;
+              margin-bottom: 6px;
+            }
+            .meta-grid {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              font-size: 10px;
+              border-bottom: 1px dashed #000;
+              padding-bottom: 6px;
+              margin-bottom: 6px;
+            }
+            .items-table {
+              border-bottom: 1px dashed #000;
+              padding-bottom: 6px;
+              margin-bottom: 6px;
+            }
+            .table-head {
+              display: flex;
+              justify-content: space-between;
+              font-size: 10px;
+              font-weight: 900;
+              color: #000;
+              text-transform: uppercase;
+              border-bottom: 1px solid #000;
+              padding-bottom: 2px;
+              margin-bottom: 4px;
+            }
+            .summary {
+              font-size: 10.5px;
+              border-bottom: 1px dashed #000;
+              padding-bottom: 6px;
+              margin-bottom: 6px;
+            }
+            .summary-row {
+              display: flex;
+              justify-content: space-between;
+              margin-bottom: 2px;
+              color: #000;
+              font-weight: 600;
+            }
+            .grand-total {
+              display: flex;
+              justify-content: space-between;
+              font-size: 13px;
+              font-weight: 900;
+              color: #000;
+              border-top: 1.5px dashed #000;
+              padding-top: 5px;
+              margin-top: 4px;
+            }
+            .qr-section {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              border-bottom: 1px dashed #000;
+              padding-bottom: 6px;
+              margin-bottom: 6px;
+            }
+            .qr-text {
+              font-size: 9.5px;
+              color: #000;
+              font-weight: 600;
+            }
+            .footer {
+              text-align: center;
+              font-size: 10.5px;
+              font-weight: 800;
+              color: #000;
+              padding-top: 2px;
+            }
           </style>
         </head>
         <body>
           <div class="header">
-            <h2>🍰 CakeFlow AI Bakery</h2>
-            <div>BILLING & TAX INVOICE</div>
+            <h2>🍰 VPN Restaurant</h2>
+            <div class="subtitle">Thiruvarur - Nagapattinam Rd, Melakottaivasal, Nagapattinam, Tamil Nadu 611106</div>
+            <div class="subtitle">GSTIN: 33AAAAA0000A1Z5</div>
+            <div class="title-tag">*** BILLING & TAX INVOICE ***</div>
           </div>
+
+          <div class="status-banner">
+            <span>PAID / SETTLED</span>
+            <span>Via Cash</span>
+          </div>
+
+          <div class="meta-grid">
+            <div>
+              <div><b>Table:</b> Table ${order.tableNumber}</div>
+              <div><b>Guest:</b> ${order.customerName || 'Walk-in Guest'}</div>
+            </div>
+            <div style="text-align: right;">
+              <div><b>Bill #:</b> #${order._id.slice(-6)}</div>
+              <div><b>Time:</b> ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+          </div>
+
+          <div class="items-table">
+            <div class="table-head">
+              <span>ITEM DESC</span>
+              <span>AMOUNT</span>
+            </div>
+            ${itemsHtml}
+          </div>
+
+          <div class="summary">
+            <div class="summary-row"><span>Subtotal:</span><span>₹${subtotal.toFixed(2)}</span></div>
+            <div class="summary-row"><span>CGST (${halfGstRate.toFixed(1)}%):</span><span>₹${cgst.toFixed(2)}</span></div>
+            <div class="summary-row"><span>SGST (${halfGstRate.toFixed(1)}%):</span><span>₹${sgst.toFixed(2)}</span></div>
+            <div class="grand-total">
+              <span>TOTAL PAID:</span>
+              <span>₹${grandTotal.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div class="qr-section">
+            <div class="qr-text">
+              <b>📱 Digital Receipt QR</b><br>
+              Scan to view order invoice
+            </div>
+            ${qrCodeUrl ? `<img src="${qrCodeUrl}" style="width: 48px; height: 48px; border: 1px solid #000;" />` : ''}
+          </div>
+
+          <div class="footer">
+            Thank you! Visit again!
+          </div>
+
           <script>
             window.onload = function() {
               window.focus();
@@ -77,9 +311,10 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
     setSettling(true);
     try {
       const methodLabel = paymentMethod === 'cash' ? 'Cash' : paymentMethod === 'upi' ? 'UPI' : 'Credit Card';
+      const activeGstRate = parseFloat(localStorage.getItem('admin_gst_rate') || String(gstRate) || '5');
       handlePrintReceipt(order);
-      await orderApi.closeTable(order._id, methodLabel);
-      setToastMessage(`💰 PAYMENT CONFIRMED! ₹${order.totalAmount?.toFixed(2)} received for Table ${order.tableNumber}.`);
+      await orderApi.closeTable(order._id, methodLabel, activeGstRate);
+      setToastMessage(`💰 PAYMENT CONFIRMED! Table ${order.tableNumber} settled.`);
       setUnpaidOrders(prev => prev.filter(o => o._id !== order._id));
       setSelectedOrder(null);
       setTimeout(() => setToastMessage(''), 5000);
@@ -96,29 +331,29 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
   });
 
   return (
-    <div id="billingPage" data-testid="billingPage" className="min-h-screen bg-[#F7F5F2] text-[#1E1818] flex flex-col relative pb-12">
+    <div id="billingPage" data-testid="billingPage" className="min-h-screen bg-[#FFFFFF] text-[#111827] flex flex-col relative pb-12">
       {/* Toast Notification */}
       {toastMessage && (
-        <div id="toastContainer" data-testid="toastContainer" className="fixed top-4 right-5 z-50 p-4 bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-bold rounded-2xl shadow-xl flex items-center gap-2 animate-slide-in">
-          <CheckCircle size={16} className="text-emerald-600 shrink-0" />
+        <div id="toastContainer" data-testid="toastContainer" className="fixed top-4 right-5 z-50 p-4 bg-[#F3F4F6] border border-[#D1D5DB] text-[#4C1D95] text-xs font-bold rounded-2xl shadow-xl flex items-center gap-2 animate-slide-in">
+          <CheckCircle size={16} className="text-[#4C1D95] shrink-0" />
           <span>{toastMessage}</span>
         </div>
       )}
 
       {/* Header */}
-      <header id="header" data-testid="header" className="bg-white/95 backdrop-blur-md border-b border-[#D0C0C0] px-6 py-3.5 flex items-center justify-between shadow-sm">
+      <header id="header" data-testid="header" className="bg-white/95 backdrop-blur-md border-b border-[#D1D5DB] px-6 py-3.5 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-2.5">
-          <div id="dashboardLogo" data-testid="dashboardLogo" className="p-2 rounded-xl bg-[#CD0D0D] text-white shadow-md">
-            <Receipt size={18} />
-          </div>
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl overflow-hidden shadow-md shrink-0 bg-[#4C1D95] border border-white/10 flex items-center justify-center">
+              <img src="/logo.png" alt="VPN Logo" className="w-full h-full object-contain brightness-150 contrast-125" />
+            </div>
           <div>
-            <h1 id="dashboardTitle" data-testid="dashboardTitle" className="font-extrabold text-base md:text-lg text-[#CD0D0D]">CakeFlow Billing Desk</h1>
-            <p className="text-[10px] md:text-xs text-[#6E6262] font-semibold">Reception, Payment Settlement & Thermal Receipts</p>
+            <h1 id="dashboardTitle" data-testid="dashboardTitle" className="font-extrabold text-base md:text-lg text-[#4C1D95]">VPN Restaurant Billing Desk</h1>
+            <p className="text-[10px] md:text-xs text-[#4B5563] font-semibold">Reception, Payment Settlement & Thermal Receipts</p>
           </div>
         </div>
 
         {onLogout && (
-          <button id="logoutBtn" data-testid="logoutBtn" onClick={onLogout} className="text-xs text-[#6E6262] hover:text-[#CD0D0D] bg-white border border-[#D0C0C0] px-3.5 py-2 rounded-xl flex items-center gap-1.5 font-bold cursor-pointer">
+          <button id="logoutBtn" data-testid="logoutBtn" onClick={onLogout} className="text-xs text-[#4B5563] hover:text-[#4C1D95] bg-white border border-[#D1D5DB] px-3.5 py-2 rounded-xl flex items-center gap-1.5 font-bold cursor-pointer">
             <LogOut size={13} />
             <span>Sign Out</span>
           </button>
@@ -130,19 +365,19 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
         <div id="receptionPage" data-testid="receptionPage" className="space-y-6">
           
           {/* Header Banner */}
-          <div className="bg-white border border-[#D0C0C0] p-6 rounded-3xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+          <div className="bg-white border border-[#D1D5DB] p-6 rounded-3xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
             <div className="flex items-center gap-3.5">
-              <div className="p-3.5 rounded-2xl bg-[#CD0D0D] text-white shadow-md shrink-0">
+              <div className="p-3.5 rounded-2xl bg-[#4C1D95] text-white shadow-md shrink-0">
                 <Receipt size={24} />
               </div>
               <div>
-                <h2 className="text-lg font-extrabold text-[#1E1818] flex items-center gap-2">
+                <h2 className="text-lg font-extrabold text-[#111827] flex items-center gap-2">
                   <span>Live Reception Bills Queue</span>
-                  <span id="receptionBadge" data-testid="receptionBadge" className="text-xs bg-[#CD0D0D] text-white px-2.5 py-0.5 rounded-full font-black">
+                  <span id="receptionBadge" data-testid="receptionBadge" className="text-xs bg-[#4C1D95] text-white px-2.5 py-0.5 rounded-full font-black">
                     {unpaidOrders.length} Unsettled
                   </span>
                 </h2>
-                <p className="text-xs text-[#6E6262] font-semibold mt-0.5">
+                <p className="text-xs text-[#4B5563] font-semibold mt-0.5">
                   Select payment method (Cash/UPI/Card), apply discounts, and generate 80mm thermal receipts
                 </p>
               </div>
@@ -150,7 +385,7 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
 
             <button
               onClick={fetchUnpaidOrders}
-              className="px-4 py-2.5 bg-[#FAF8F8] border border-[#D0C0C0] rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm"
+              className="px-4 py-2.5 bg-[#F9FAFB] border border-[#D1D5DB] rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm"
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               <span>Refresh Bills</span>
@@ -158,10 +393,10 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
           </div>
 
           {/* Unpaid Orders Table */}
-          <div id="receptionTable" data-testid="receptionTable" className="bg-white border border-[#D0C0C0] rounded-3xl overflow-hidden shadow-sm">
+          <div id="receptionTable" data-testid="receptionTable" className="bg-white border border-[#D1D5DB] rounded-3xl overflow-hidden shadow-sm">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[#FAF8F8] border-b border-[#D0C0C0] text-[#6E6262] font-extrabold uppercase text-[10px]">
+                <thead className="bg-[#F9FAFB] border-b border-[#D1D5DB] text-[#4B5563] font-extrabold uppercase text-[10px]">
                   <tr>
                     <th className="p-4">Order ID</th>
                     <th className="p-4">Table #</th>
@@ -172,10 +407,10 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
                     <th className="p-4 text-center">Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#E8E0E0] text-[#1E1818]">
+                <tbody className="divide-y divide-[#F3F4F6] text-[#111827]">
                   {filteredOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="p-8 text-center text-[#6E6262] font-semibold">
+                      <td colSpan={7} className="p-8 text-center text-[#4B5563] font-semibold">
                         🎉 All table bills are settled! No pending bills in queue.
                       </td>
                     </tr>
@@ -185,17 +420,17 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
                         key={order._id}
                         id={index === 0 ? "orderRow1" : `orderRow-${index + 1}`}
                         data-testid={index === 0 ? "orderRow1" : `orderRow-${index + 1}`}
-                        className="hover:bg-[#CD0D0D]/5 transition-colors cursor-pointer group"
+                        className="hover:bg-[#4C1D95]/5 transition-colors cursor-pointer group"
                       >
-                        <td className="p-4 font-mono font-bold text-[#CD0D0D]">#{order._id.slice(-6)}</td>
-                        <td className="p-4 font-extrabold text-[#CD0D0D]">Table {order.tableNumber}</td>
+                        <td className="p-4 font-mono font-bold text-[#4C1D95]">#{order._id.slice(-6)}</td>
+                        <td className="p-4 font-extrabold text-[#4C1D95]">Table {order.tableNumber}</td>
                         <td className="p-4 font-semibold">{order.customerName}</td>
-                        <td className="p-4 text-[11px] text-[#6E6262] font-medium max-w-[200px] truncate">
+                        <td className="p-4 text-[11px] text-[#4B5563] font-medium max-w-[200px] truncate">
                           {order.items?.map((i: any) => `${i.quantity}x ${i.product?.name || i.name}`).join(', ')}
                         </td>
-                        <td className="p-4 font-black font-mono text-emerald-700">₹{order.totalAmount?.toFixed(2)}</td>
+                        <td className="p-4 font-black font-mono text-neutral-700">₹{order.totalAmount?.toFixed(2)}</td>
                         <td className="p-4">
-                          <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-amber-500 text-white shadow-xs">
+                          <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-[#D1D5DB] text-white shadow-xs">
                             UNSETTLED
                           </span>
                         </td>
@@ -205,7 +440,7 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
                               id={`viewBillBtn-${order._id}`}
                               data-testid={`viewBillBtn-${order._id}`}
                               onClick={() => setSelectedOrder(order)}
-                              className="px-3 py-1.5 bg-[#CD0D0D] hover:bg-[#A60A0A] text-white font-extrabold text-xs rounded-xl shadow-sm transition-all cursor-pointer"
+                              className="px-3 py-1.5 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold text-xs rounded-xl shadow-sm transition-all cursor-pointer"
                             >
                               Settle & Print
                             </button>
@@ -221,6 +456,202 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
 
         </div>
       </main>
+
+      {/* 🏷️ CONFIGURE GST RATE MODAL */}
+
+      {showGstModal && (
+
+        <div id="gstModal" data-testid="gstModal" className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+
+          <div className="bg-white border border-[#E5E7EB] w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden animate-scale-in text-[#111827]">
+
+            {/* Header */}
+
+            <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white p-4 flex justify-between items-center shadow-sm">
+
+              <div className="flex items-center gap-2">
+
+                <span className="text-base">🇮🇳</span>
+
+                <div>
+
+                  <h3 className="font-extrabold text-sm leading-tight">Indian Govt GST Tax Rate Manager</h3>
+
+                  <p className="text-[10px] text-amber-100 font-medium">Standard Bakery & Food Court Tax Slabs</p>
+
+                </div>
+
+              </div>
+
+              <button
+
+                onClick={() => setShowGstModal(false)}
+
+                className="text-white/80 hover:text-white p-1 rounded-full hover:bg-white/20 transition-colors cursor-pointer"
+
+              >
+
+                <X size={16} />
+
+              </button>
+
+            </div>
+
+
+
+            {/* Form */}
+
+            <form onSubmit={handleSaveGstRate} className="p-5 space-y-4">
+
+              <div>
+
+                <label className="block text-xs font-bold text-[#4B5563] uppercase tracking-wider mb-1.5">
+
+                  Total GST Rate (%)
+
+                </label>
+
+                <div className="relative">
+
+                  <input
+
+                    id="gstRateInput"
+
+                    data-testid="gstRateInput"
+
+                    type="number"
+
+                    step="0.1"
+
+                    min="0"
+
+                    max="50"
+
+                    required
+
+                    placeholder="e.g. 5 or 12 or 18"
+
+                    value={tempGstInput}
+
+                    onChange={(e) => setTempGstInput(e.target.value)}
+
+                    className="w-full bg-[#F9FAFB] border border-[#E5E7EB] focus:border-amber-500 rounded-xl px-4 py-2.5 text-sm font-mono font-bold text-[#111827] outline-none"
+
+                  />
+
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-[#4B5563]">% GST</span>
+
+                </div>
+
+                <p className="text-[10px] text-[#4B5563] mt-1.5 font-semibold flex items-center justify-between">
+
+                  <span>Central CGST: <strong className="text-amber-600 font-mono">{(parseFloat(tempGstInput) / 2 || 0).toFixed(1)}%</strong></span>
+
+                  <span>State SGST: <strong className="text-amber-600 font-mono">{(parseFloat(tempGstInput) / 2 || 0).toFixed(1)}%</strong></span>
+
+                </p>
+
+              </div>
+
+
+
+              {/* Official Indian Govt GST Slabs */}
+
+              <div className="space-y-2 pt-1 border-t border-[#F3F4F6]">
+
+                <label className="block text-[10px] font-extrabold text-[#4B5563] uppercase tracking-wider">
+
+                  Official Govt GST Slabs:
+
+                </label>
+
+                <div className="grid grid-cols-2 gap-2">
+
+                  {[
+
+                    { label: '5% Restaurant/Bakery', desc: '2.5% CGST + 2.5% SGST', val: 5 },
+
+                    { label: '12% Packaged Food', desc: '6.0% CGST + 6.0% SGST', val: 12 },
+
+                    { label: '18% AC Catering', desc: '9.0% CGST + 9.0% SGST', val: 18 },
+
+                    { label: '0% Tax Exempt', desc: 'No GST Applied', val: 0 }
+
+                  ].map(p => (
+
+                    <button
+
+                      key={p.val}
+
+                      type="button"
+
+                      onClick={() => setTempGstInput(String(p.val))}
+
+                      className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+
+                        tempGstInput === String(p.val)
+
+                          ? 'bg-amber-50 border-amber-500 shadow-xs'
+
+                          : 'bg-[#F9FAFB] text-[#111827] border-[#E5E7EB] hover:bg-white'
+
+                      }`}
+
+                    >
+
+                      <div className="text-[11px] font-extrabold text-[#111827] flex items-center justify-between">
+
+                        <span>{p.label}</span>
+
+                        {tempGstInput === String(p.val) && <span className="text-amber-600 text-xs">✓</span>}
+
+                      </div>
+
+                      <p className="text-[9px] text-[#4B5563] font-semibold mt-0.5">{p.desc}</p>
+
+                    </button>
+
+                  ))}
+
+                </div>
+
+              </div>
+
+
+
+              <div className="pt-2">
+
+                <button
+
+                  id="saveGstBtn"
+
+                  data-testid="saveGstBtn"
+
+                  type="submit"
+
+                  className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-black rounded-2xl text-xs shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.98]"
+
+                >
+
+                  <CheckCircle size={15} />
+
+                  <span>Update GST Rate & Apply to POS Receipts</span>
+
+                </button>
+
+              </div>
+
+            </form>
+
+          </div>
+
+        </div>
+
+      )}
+
+
+
+
 
       {/* Smart Receipt Settlement Modal */}
       {selectedOrder && (
@@ -242,3 +673,4 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
 
 export { BillingView as BillingPage };
 export default BillingView;
+

@@ -1,15 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const QRCode = require('qrcode');
-const Table = require('../models/Table');
-const Order = require('../models/Order');
+const { SmartTable, Order, OrderItem, Product, Op } = require('../config/mysql');
 const { getIo } = require('../sockets');
+const { staffOnly, adminOnly } = require('../middleware/auth');
 
 // Helper to generate QR code data URL
 const generateQrDataUrl = async (url) => {
   try {
     return await QRCode.toDataURL(url, {
-      errorCorrectionLevel: 'H',
+      errorCorrectionLevel: 'M',
       type: 'image/png',
       margin: 2,
       color: {
@@ -23,54 +23,26 @@ const generateQrDataUrl = async (url) => {
   }
 };
 
-// Seed default tables if none exist
-const seedDefaultTables = async () => {
-  if ((process.env.DB_MODE || '').toLowerCase() === 'mysql') return;
-  try {
-    const count = await Table.countDocuments();
-    if (count === 0) {
-      console.log('Seeding 7 default Smart Tables with QR Codes...');
-      const tablesToSeed = [1, 2, 3, 4, 5, 6, 7];
-      for (const num of tablesToSeed) {
-        const securityToken = `TOKEN_TBL_${num}_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-        const targetUrl = `https://cakeflowai.com/table/${num}`;
-        const qrCodeDataUrl = await generateQrDataUrl(targetUrl);
-
-        await Table.create({
-          tableNumber: num,
-          qrCodeId: `QR-TBL-0${num}-${securityToken.slice(-6)}`,
-          securityToken: securityToken,
-          targetUrl: targetUrl,
-          qrCodeDataUrl: qrCodeDataUrl,
-          status: 'Available',
-          capacity: num % 2 === 0 ? 4 : 2,
-          customerCount: num % 2 === 0 ? 4 : 2,
-          currentBill: 0,
-          paymentStatus: 'Unpaid'
-        });
-      }
-      console.log('Successfully seeded 6 Smart Tables.');
-    }
-  } catch (err) {
-    console.error('Failed to seed default tables:', err);
-  }
-};
-
 // GET /api/tables - List all tables
 router.get('/', async (req, res) => {
   try {
-    await seedDefaultTables();
-    let tables = await Table.find({}).sort({ tableNumber: 1 });
+    let tables = await SmartTable.findAll({ order: [['tableNumber', 'ASC']] });
 
-    // Sync live order status for active tables
-    for (let table of tables) {
-      if (table.currentOrderId) {
-        const order = await Order.findById(table.currentOrderId);
-        if (order) {
-          table.currentOrderNumber = `#${order._id.toString().slice(-4)}`;
+    // Batch-sync live order status for active tables
+    const activeOrderIds = tables.map(t => t.currentOrderId).filter(Boolean);
+    if (activeOrderIds.length > 0) {
+      const orders = await Order.findAll({ where: { id: activeOrderIds } });
+      const orderMap = new Map(orders.map(o => [String(o.id), o]));
+
+      await Promise.all(
+        tables.map(async (table) => {
+          if (!table.currentOrderId) return;
+          const order = orderMap.get(String(table.currentOrderId));
+          if (!order) return;
+
+          table.currentOrderNumber = `#${String(order.id).padStart(4, '0')}`;
           table.currentBill = order.totalAmount;
-          
-          // Map order status to table status
+
           if (order.status === 'pending') {
             table.status = 'Ordering';
             table.orderProgress = 15;
@@ -84,7 +56,6 @@ router.get('/', async (req, res) => {
             table.status = 'Ready To Serve';
             table.orderProgress = 85;
           } else if (order.status === 'served' || order.status === 'cancelled' || order.paymentStatus === 'paid') {
-            // AUTOMATIC TABLE AVAILABLE AFTER FINISH / SERVED & PAID!
             table.status = 'Available';
             table.currentOrderId = null;
             table.currentOrderNumber = '';
@@ -92,9 +63,11 @@ router.get('/', async (req, res) => {
             table.paymentStatus = 'Paid';
             table.orderProgress = 0;
           }
-          await table.save();
-        }
-      }
+          if (table.changed()) {
+            await table.save();
+          }
+        })
+      );
     }
 
     res.json(tables);
@@ -111,7 +84,7 @@ router.get('/:tableNumber', async (req, res) => {
       return res.status(400).json({ error: 'Invalid table number' });
     }
 
-    let table = await Table.findOne({ tableNumber: tableNum });
+    let table = await SmartTable.findOne({ where: { tableNumber: tableNum } });
     if (!table) {
       return res.status(404).json({ error: `Table ${tableNum} not found in system` });
     }
@@ -119,12 +92,18 @@ router.get('/:tableNumber', async (req, res) => {
     // Fetch active order details
     let activeOrder = null;
     if (table.currentOrderId) {
-      activeOrder = await Order.findById(table.currentOrderId);
+      activeOrder = await Order.findByPk(table.currentOrderId, {
+        include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product' }] }]
+      });
     } else {
-      activeOrder = await Order.findOne({ 
-        tableNumber: tableNum, 
-        status: { $ne: 'served' } 
-      }).sort({ createdAt: -1 });
+      activeOrder = await Order.findOne({
+        where: {
+          tableNumber: tableNum,
+          status: { [Op.notIn]: ['served', 'cancelled'] }
+        },
+        include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product' }] }],
+        order: [['createdAt', 'DESC']]
+      });
     }
 
     res.json({
@@ -143,12 +122,12 @@ router.get('/:tableNumber/status', async (req, res) => {
   res.status(405).json({ error: 'Use PUT method to update table status' });
 });
 
-router.put('/:tableNumber/status', async (req, res) => {
+router.put('/:tableNumber/status', staffOnly, async (req, res) => {
   try {
     const tableNum = parseInt(req.params.tableNumber);
     const { status, customerCount, waiterAssigned, paymentStatus } = req.body;
 
-    let table = await Table.findOne({ tableNumber: tableNum });
+    let table = await SmartTable.findOne({ where: { tableNumber: tableNum } });
     if (!table) {
       return res.status(404).json({ error: 'Table not found' });
     }
@@ -190,16 +169,18 @@ router.put('/:tableNumber/status', async (req, res) => {
 });
 
 // POST /api/tables/:tableNumber/regenerate-qr - Regenerate QR code
-router.post('/:tableNumber/regenerate-qr', async (req, res) => {
+router.post('/:tableNumber/regenerate-qr', staffOnly, async (req, res) => {
   try {
     const tableNum = parseInt(req.params.tableNumber);
-    let table = await Table.findOne({ tableNumber: tableNum });
+    let table = await SmartTable.findOne({ where: { tableNumber: tableNum } });
     if (!table) {
       return res.status(404).json({ error: 'Table not found' });
     }
 
     const securityToken = `TOKEN_TBL_${tableNum}_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-    const targetUrl = `https://cakeflowai.com/table/${tableNum}`;
+    const origin = req.headers.origin || req.headers.referer || `http://${req.headers.host || 'localhost:5173'}`;
+    const cleanOrigin = origin.replace(/\/$/, '');
+    const targetUrl = `${cleanOrigin}/table/${tableNum}`;
     const qrCodeDataUrl = await generateQrDataUrl(targetUrl);
 
     table.securityToken = securityToken;
@@ -220,8 +201,8 @@ router.post('/:tableNumber/regenerate-qr', async (req, res) => {
   }
 });
 
-// POST /api/tables - Admin adding new tables (Scalability to N tables)
-router.post('/', async (req, res) => {
+// POST /api/tables - Admin adding new tables
+router.post('/', staffOnly, async (req, res) => {
   try {
     const { tableNumber, capacity, customerCount } = req.body;
     const num = Number(tableNumber);
@@ -230,7 +211,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Valid table number is required' });
     }
 
-    const existing = await Table.findOne({ tableNumber: num });
+    const existing = await SmartTable.findOne({ where: { tableNumber: num } });
     if (existing) {
       return res.status(400).json({ message: `Table ${num} already exists` });
     }
@@ -239,12 +220,12 @@ router.post('/', async (req, res) => {
     const count = Number(customerCount) || cap;
 
     const securityToken = `TOKEN_TBL_${num}_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-    const origin = req.headers.origin || req.headers.referer || `http://${req.headers.host || 'localhost:5001'}`;
+    const origin = req.headers.origin || req.headers.referer || `http://${req.headers.host || 'localhost:5173'}`;
     const cleanOrigin = origin.replace(/\/$/, '');
     const targetUrl = `${cleanOrigin}/table/${num}`;
     const qrCodeDataUrl = await generateQrDataUrl(targetUrl);
 
-    const newTable = await Table.create({
+    const newTable = await SmartTable.create({
       tableNumber: num,
       qrCodeId: `QR-TBL-0${num}-${securityToken.slice(-6)}`,
       securityToken,
@@ -267,14 +248,42 @@ router.post('/', async (req, res) => {
   }
 });
 
+// POST /api/tables/bulk-delete - Admin bulk deleting multiple tables
+router.post('/bulk-delete', staffOnly, async (req, res) => {
+  try {
+    const { tableNumbers } = req.body;
+    if (!Array.isArray(tableNumbers) || tableNumbers.length === 0) {
+      return res.status(400).json({ message: 'No table numbers provided for bulk delete' });
+    }
+
+    const nums = tableNumbers.map(n => parseInt(n)).filter(n => !isNaN(n));
+    if (nums.length === 0) {
+      return res.status(400).json({ message: 'Invalid table numbers' });
+    }
+
+    await SmartTable.destroy({ where: { tableNumber: { [Op.in]: nums } } });
+
+    try {
+      const io = getIo();
+      nums.forEach(num => io.emit('table_deleted', { tableNumber: num }));
+    } catch (e) {}
+
+    res.json({ message: `${nums.length} tables deleted successfully`, tableNumbers: nums });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // DELETE /api/tables/:tableNumber - Admin deleting a table
-router.delete('/:tableNumber', async (req, res) => {
+router.delete('/:tableNumber', staffOnly, async (req, res) => {
   try {
     const tableNum = parseInt(req.params.tableNumber);
-    const deleted = await Table.findOneAndDelete({ tableNumber: tableNum });
-    if (!deleted) {
+    const table = await SmartTable.findOne({ where: { tableNumber: tableNum } });
+    if (!table) {
       return res.status(404).json({ message: `Table ${tableNum} not found` });
     }
+
+    await table.destroy();
 
     try {
       const io = getIo();

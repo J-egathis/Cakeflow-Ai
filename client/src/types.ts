@@ -2,6 +2,8 @@ export interface Product {
   _id: string;
   name: string;
   category: string;
+  mealType?: string;
+  subCategory?: string;
   description?: string;
   ingredients?: string;
   price: number;
@@ -36,6 +38,7 @@ export interface Order {
   rejectionReason?: 'Out of Stock' | 'Machine Issue' | 'Kitchen Busy' | 'Ingredient Missing' | '';
   estimatedCompletionTime?: string;
   totalAmount: number;
+  gstRate?: number | null;
   paymentStatus: 'unpaid' | 'paid';
   paymentMethod: 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Split' | '';
   preparationTimerStartedAt?: string;
