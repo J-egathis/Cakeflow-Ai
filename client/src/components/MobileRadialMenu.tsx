@@ -8,6 +8,7 @@ import {
   Package,
   DollarSign,
   Wallet,
+  Users,
   Plus
 } from 'lucide-react';
 
@@ -29,7 +30,8 @@ const TABS = [
   { id: 'sold_unsold', label: 'Sold & Unsold', Icon: PackageCheck },
   { id: 'inventory', label: 'Inventory', Icon: Package },
   { id: 'accounts', label: 'Accounts', Icon: DollarSign },
-  { id: 'expenses', label: 'Shop Expenses', Icon: Wallet }
+  { id: 'expenses', label: 'Shop Expenses', Icon: Wallet },
+  { id: 'staff_logins', label: 'Staff Logins', Icon: Users }
 ];
 
 const STEP = 15; // 15 degrees per item

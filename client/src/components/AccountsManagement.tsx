@@ -60,17 +60,18 @@ export const AccountsManagement: React.FC<AccountsManagementProps> = ({
   const fetchAccountSummary = async (
     filter = dateFilter,
     start = customStartDate,
-    end = customEndDate
+    end = customEndDate,
+    silent = false
   ) => {
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await accountsApi.getSummary(filter, start, end, gstRate);
       setAccountData(data);
     } catch (err: any) {
       console.error('Failed to load accounts summary:', err);
-      addToast('Failed to load account statement data', 'danger');
+      if (!silent) addToast('Failed to load account statement data', 'danger');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -82,8 +83,14 @@ export const AccountsManagement: React.FC<AccountsManagementProps> = ({
 
   useEffect(() => {
     const socket = getSocket();
+    // Debounced silent refresh: socket bursts update numbers once, with no loading flash
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     const handleRefresh = () => {
-      fetchAccountSummary(dateFilter, customStartDate, customEndDate);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        fetchAccountSummary(dateFilter, customStartDate, customEndDate, true);
+      }, 300);
     };
 
     socket.on('accounts_updated', handleRefresh);
@@ -93,6 +100,7 @@ export const AccountsManagement: React.FC<AccountsManagementProps> = ({
     socket.on('inventory_alert', handleRefresh);
 
     return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
       socket.off('accounts_updated', handleRefresh);
       socket.off('new_order', handleRefresh);
       socket.off('order_updated', handleRefresh);

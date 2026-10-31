@@ -76,7 +76,7 @@ export const SoldUnsoldTracker: React.FC<SoldUnsoldTrackerProps> = ({
     try {
       const [res, freshOrders] = await Promise.all([
         categoryApi.getUnsoldReports().catch(() => []),
-        orderApi.getAll().catch(() => []),
+        orderApi.getAll({ timeframe: 'all' }).catch(() => []),
       ]);
       const itemsList = Array.isArray(res)
         ? res
@@ -112,21 +112,30 @@ export const SoldUnsoldTracker: React.FC<SoldUnsoldTrackerProps> = ({
       }
     };
 
+    // Debounced: one order change emits several socket events; refresh only once
+    let orderChangeTimer: ReturnType<typeof setTimeout> | null = null;
     const handleOrderChange = () => {
-      orderApi.getAll().then(data => {
-        if (Array.isArray(data)) setLiveOrders(data);
-      }).catch(() => {});
+      if (orderChangeTimer) clearTimeout(orderChangeTimer);
+      orderChangeTimer = setTimeout(() => {
+        orderChangeTimer = null;
+        orderApi.getAll({ timeframe: 'all' }).then(data => {
+          if (Array.isArray(data)) setLiveOrders(data);
+        }).catch(() => {});
+      }, 200);
     };
 
+    const handleChefUnsoldReport = () => fetchUnsoldReports();
+
     socket.on('unsold_reports_updated', handleUnsoldUpdated);
-    socket.on('chef_unsold_report', () => fetchUnsoldReports());
+    socket.on('chef_unsold_report', handleChefUnsoldReport);
     socket.on('order_updated', handleOrderChange);
     socket.on('table_status_updated', handleOrderChange);
     socket.on('new_order', handleOrderChange);
 
     return () => {
+      if (orderChangeTimer) clearTimeout(orderChangeTimer);
       socket.off('unsold_reports_updated', handleUnsoldUpdated);
-      socket.off('chef_unsold_report');
+      socket.off('chef_unsold_report', handleChefUnsoldReport);
       socket.off('order_updated', handleOrderChange);
       socket.off('table_status_updated', handleOrderChange);
       socket.off('new_order', handleOrderChange);

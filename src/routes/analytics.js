@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { Order, OrderItem, Product, Inventory } = require('../config/mysql');
+const { Order, OrderItem, Product, Inventory, Op } = require('../config/mysql');
 const { staffOnly, adminOnly } = require('../middleware/auth');
 
 // Get Admin Analytics Dashboard Data (with Date Filtering: today, 7days, 30days, lastmonth, all, custom)
@@ -58,7 +58,11 @@ router.get('/', staffOnly, async (req, res) => {
     let endDate = endOfToday;
     let periodLabel = "Today";
 
-    if (filter === '7days') {
+    if (filter === 'yesterday') {
+      startDate = new Date(startOfToday.getTime() - 24 * 3600 * 1000);
+      endDate = new Date(endOfToday.getTime() - 24 * 3600 * 1000);
+      periodLabel = "Yesterday";
+    } else if (filter === '7days') {
       startDate = startOf7Days;
       periodLabel = "Last 7 Days";
     } else if (filter === '30days') {
@@ -85,9 +89,15 @@ router.get('/', staffOnly, async (req, res) => {
       periodLabel = qStartDate && qEndDate ? `${qStartDate} to ${qEndDate}` : "Custom Date Range";
     }
 
-    // Fetch all orders from MySQL
+    // Fetch only orders inside the selected period (+ any still-active orders for live table count)
     const allOrders = await Order.findAll({
-      include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product' }] }],
+      where: filter === 'all' ? undefined : {
+        [Op.or]: [
+          { createdAt: { [Op.between]: [startDate, endDate] } },
+          { status: { [Op.notIn]: ['served', 'cancelled'] } }
+        ]
+      },
+      include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product', attributes: ['id', 'name', 'price', 'category'] }] }],
       order: [['createdAt', 'DESC']]
     });
 
@@ -124,37 +134,19 @@ router.get('/', staffOnly, async (req, res) => {
         }
       }
     });
-    const avgPrepTimeMins = prepCount > 0 ? Math.round(totalPrepTime / prepCount) : 14;
+    const avgPrepTimeMins = prepCount > 0 ? Math.round(totalPrepTime / prepCount) : 0;
 
-    // 1. CATEGORY SALES BREAKDOWN
-    const categorySalesMap = {
-      'Cakes': 0,
-      'Snacks': 0,
-      'Juice': 0,
-      'Chats': 0
-    };
-
+    // 1. CATEGORY SALES BREAKDOWN (Dynamic actual restaurant categories)
+    const categorySalesMap = {};
     let totalItemSalesSum = 0;
 
     validOrders.forEach(o => {
       const items = o.items || [];
       items.forEach(item => {
-        let catName = 'Snacks';
-        const cat = (item.product?.category || item.category || '').toLowerCase();
-        const pName = (item.product?.name || item.name || '').toLowerCase();
-
-        if (cat.includes('cake') || cat.includes('pastr') || cat.includes('brownie') || cat.includes('cookie') || pName.includes('cake')) {
-          catName = 'Cakes';
-        } else if (cat.includes('drink') || cat.includes('juice') || cat.includes('cold') || cat.includes('hot') || cat.includes('latte') || pName.includes('juice') || pName.includes('tea') || pName.includes('coffee') || pName.includes('smoothie')) {
-          catName = 'Juice';
-        } else if (cat.includes('chat') || cat.includes('chaat') || pName.includes('puri')) {
-          catName = 'Chats';
-        } else {
-          catName = 'Snacks';
-        }
-
-        const price = item.price || item.product?.price || 0;
-        const lineTotal = price * (item.quantity || 1);
+        if (item.status === 'cancelled') return;
+        const catName = (item.product?.category || item.category || 'General').trim() || 'General';
+        const price = Number(item.price ?? item.product?.price ?? 0);
+        const lineTotal = price * (Number(item.quantity) || 1);
         categorySalesMap[catName] = (categorySalesMap[catName] || 0) + lineTotal;
         totalItemSalesSum += lineTotal;
       });
@@ -162,18 +154,13 @@ router.get('/', staffOnly, async (req, res) => {
 
     let categoryBreakdown = [];
     if (totalItemSalesSum > 0) {
-      categoryBreakdown = Object.entries(categorySalesMap).map(([category, sales]) => ({
-        category,
-        sales: Math.round(sales),
-        percent: Math.round((sales / totalItemSalesSum) * 100)
-      }));
-    } else {
-      categoryBreakdown = [
-        { category: 'Cakes', sales: Math.round(grossRevenue * 0.45), percent: 45 },
-        { category: 'Snacks', sales: Math.round(grossRevenue * 0.30), percent: 30 },
-        { category: 'Juice', sales: Math.round(grossRevenue * 0.15), percent: 15 },
-        { category: 'Chats', sales: Math.round(grossRevenue * 0.10), percent: 10 }
-      ];
+      categoryBreakdown = Object.entries(categorySalesMap)
+        .sort((a, b) => b[1] - a[1])
+        .map(([category, sales]) => ({
+          category,
+          sales: Math.round(sales),
+          percent: Math.round((sales / totalItemSalesSum) * 100)
+        }));
     }
 
     // 2. PEAK DINING HOURS BREAKDOWN (8 AM to 10 PM)

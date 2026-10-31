@@ -209,21 +209,46 @@ router.delete('/meals/:name', staffOnly, async (req, res) => {
     config.mealCategories = (config.mealCategories || []).filter(m => m !== mealName);
     config.hiddenMealCategories = (config.hiddenMealCategories || []).filter(m => m !== mealName);
 
-    // Find categories belonging to this mealType
-    const mealProducts = await Product.findAll({ where: { mealType: mealName }, attributes: ['category'] });
-    const catsToDelete = Array.from(new Set(mealProducts.map(p => p.category).filter(Boolean)));
+    // Find products belonging specifically to this mealType
+    const mealProducts = await Product.findAll({ where: { mealType: mealName }, attributes: ['id', 'category'] });
+    const mealProductIds = mealProducts.map(p => p.id).filter(Boolean);
+    const candidateCats = new Set(mealProducts.map(p => (p.category || '').trim()).filter(Boolean));
+
     if (config.categoryMealMap) {
       Object.keys(config.categoryMealMap).forEach(c => {
         if (config.categoryMealMap[c] === mealName) {
-          catsToDelete.push(c);
+          candidateCats.add(c);
           delete config.categoryMealMap[c];
         }
       });
     }
     writeCategoriesConfig(config);
 
-    if (catsToDelete.length > 0) {
-      await permanentlyDeleteCategories(catsToDelete);
+    // Delete only products that belong to this deleted mealType
+    if (mealProductIds.length > 0) {
+      if (OrderItem) {
+        await OrderItem.update({ productId: null }, { where: { productId: { [Op.in]: mealProductIds } } });
+      }
+      if (Inventory) {
+        try {
+          await Inventory.update({ linkedProductId: null }, { where: { linkedProductId: { [Op.in]: mealProductIds } } });
+        } catch (e) {}
+      }
+      await Product.destroy({ where: { id: { [Op.in]: mealProductIds } } });
+    }
+
+    // Only delete CategoryMeta for categories that have NO remaining products in other meal types
+    if (candidateCats.size > 0) {
+      const catArray = Array.from(candidateCats);
+      const remainingProducts = await Product.findAll({
+        where: { category: { [Op.in]: catArray } },
+        attributes: ['category']
+      });
+      const stillUsedCats = new Set(remainingProducts.map(p => (p.category || '').trim()).filter(Boolean));
+      const unusedCats = catArray.filter(c => !stillUsedCats.has(c));
+      if (unusedCats.length > 0) {
+        await permanentlyDeleteCategories(unusedCats);
+      }
     }
 
     try { const io = getIo(); if (io) { io.emit('category:updated'); io.emit('product:updated'); } } catch (e) {}

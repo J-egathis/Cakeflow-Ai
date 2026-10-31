@@ -1,6 +1,10 @@
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
 const QRCode = require('qrcode');
-const { User, Product, SmartTable, Inventory } = require('./mysql');
+const { User, Product, SmartTable, Inventory, Op } = require('./mysql');
+
+const STAFF_CREDENTIALS_FILE = path.join(__dirname, '../../datas/staff_credentials.json');
 
 const generateQrDataUrl = async (text) => {
   try {
@@ -17,9 +21,13 @@ const generateQrDataUrl = async (text) => {
 const seedMySQL = async () => {
   try {
     // 1. Seed Users
-    // Passwords come from .env (ADMIN_PASSWORD, CHEF_PASSWORD, WAITER_PASSWORD, CASHIER_PASSWORD).
-    // If an env password is set, existing accounts are updated to it on every start.
-    // If not set, the old demo passwords are used ONLY when creating a missing account.
+    let savedStaffCreds = null;
+    try {
+      if (fs.existsSync(STAFF_CREDENTIALS_FILE)) {
+        savedStaffCreds = JSON.parse(fs.readFileSync(STAFF_CREDENTIALS_FILE, 'utf8'));
+      }
+    } catch (e) {}
+
     const envPasswords = {
       admin: process.env.ADMIN_PASSWORD,
       chef: process.env.CHEF_PASSWORD,
@@ -30,19 +38,39 @@ const seedMySQL = async () => {
     const demoPasswords = { admin: 'admin123', chef: 'chef123', waiter: 'waiter123', cashier: 'cashier123', customer: 'customer123' };
 
     const defaultUsers = [
-      { username: 'admin', group: 'admin', role: 'admin', name: 'Store Owner' },
-      { username: 'chef', group: 'chef', role: 'cake_chef', name: 'Head Pastry Chef' },
-      { username: 'cakechef', group: 'chef', role: 'cake_chef', name: 'Cake Chef' },
-      { username: 'cake_chef', group: 'chef', role: 'cake_chef', name: 'Head Cake Chef' },
-      { username: 'snackschef', group: 'chef', role: 'snacks_chef', name: 'Snacks Chef' },
-      { username: 'snacks_chef', group: 'chef', role: 'snacks_chef', name: 'Snacks Master Chef' },
-      { username: 'kitchen', group: 'chef', role: 'cake_chef', name: 'Kitchen Display' },
-      { username: 'waiter', group: 'waiter', role: 'waiter', name: 'Floor Waiter' },
+      { username: savedStaffCreds?.admin?.username || 'admin', group: 'admin', role: 'admin', name: 'Store Owner' },
+      { username: savedStaffCreds?.chef?.username || 'chef', group: 'chef', role: 'cake_chef', name: 'Head Chef' },
+      { username: savedStaffCreds?.servant?.username || 'waiter', group: 'waiter', role: 'waiter', name: 'Table Servant' },
       { username: 'cashier', group: 'cashier', role: 'cashier', name: 'Front Desk Cashier' },
       { username: 'customer', group: 'customer', role: 'customer', name: 'Table 1 Guest' }
     ];
 
     for (const { group, ...u } of defaultUsers) {
+      if (group === 'admin' && savedStaffCreds?.admin?.username && savedStaffCreds?.admin?.password) {
+        const existingAdmin = await User.findOne({ where: { role: 'admin' }, order: [['id', 'ASC']] });
+        if (!existingAdmin) {
+          const password = await bcrypt.hash(savedStaffCreds.admin.password, 10);
+          await User.create({ ...u, username: savedStaffCreds.admin.username, password });
+        }
+        continue;
+      }
+      if (group === 'chef' && savedStaffCreds?.chef?.username && savedStaffCreds?.chef?.password) {
+        const existingChef = await User.findOne({ where: { role: { [Op.in]: ['cake_chef', 'snacks_chef'] } }, order: [['id', 'ASC']] });
+        if (!existingChef) {
+          const password = await bcrypt.hash(savedStaffCreds.chef.password, 10);
+          await User.create({ ...u, username: savedStaffCreds.chef.username, password });
+        }
+        continue;
+      }
+      if (group === 'waiter' && savedStaffCreds?.servant?.username && savedStaffCreds?.servant?.password) {
+        const existingServant = await User.findOne({ where: { role: 'waiter' }, order: [['id', 'ASC']] });
+        if (!existingServant) {
+          const password = await bcrypt.hash(savedStaffCreds.servant.password, 10);
+          await User.create({ ...u, username: savedStaffCreds.servant.username, password });
+        }
+        continue;
+      }
+
       const envPass = envPasswords[group];
       const existing = await User.findOne({ where: { username: u.username } });
       if (!existing) {

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs');
 const path = require('path');
-const { Order, OrderItem, Product, Inventory, Expense } = require('../config/mysql');
+const { Order, OrderItem, Product, Inventory, Expense, Op } = require('../config/mysql');
 const { staffOnly } = require('../middleware/auth');
 const { getIo } = require('../sockets');
 
@@ -12,12 +12,31 @@ const getSystemGstRate = () => {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
-      if (data && typeof data.gstRate === 'number') {
+      if (data && typeof data.gstRate === 'number' && !isNaN(data.gstRate)) {
         return data.gstRate;
       }
     }
   } catch (e) {}
-  return 5;
+  return 0;
+};
+
+// Format any Date into YYYY-MM-DD in Indian Standard Time (Asia/Kolkata, +05:30)
+// so Hostinger (UTC) and localhost (IST) compute identical day boundaries.
+const getIstDateString = (d = new Date()) => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date(d));
+  } catch (e) {
+    const dt = new Date(d);
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const day = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
 };
 
 // GET /api/accounts - Complete Financial & Accounting Dashboard Data
@@ -27,49 +46,50 @@ router.get('/', staffOnly, async (req, res) => {
     const { startDate: qStartDate, endDate: qEndDate, gstRate: qGstRate } = req.query;
 
     const now = new Date();
-
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-
-    const endOfToday = new Date(now);
-    endOfToday.setHours(23, 59, 59, 999);
+    const todayIstStr = getIstDateString(now);
+    const startOfToday = new Date(`${todayIstStr}T00:00:00+05:30`);
+    const endOfToday = new Date(`${todayIstStr}T23:59:59.999+05:30`);
 
     let startDate = new Date(startOfToday);
     let endDate = new Date(endOfToday);
     let periodLabel = 'Today';
 
     if (filter === 'yesterday') {
-      startDate = new Date(startOfToday);
-      startDate.setDate(startDate.getDate() - 1);
-      endDate = new Date(startDate);
-      endDate.setHours(23, 59, 59, 999);
+      startDate = new Date(startOfToday.getTime() - 24 * 3600 * 1000);
+      endDate = new Date(endOfToday.getTime() - 24 * 3600 * 1000);
       periodLabel = 'Yesterday';
     } else if (filter === '7days') {
-      startDate = new Date(startOfToday);
-      startDate.setDate(startDate.getDate() - 6);
+      startDate = new Date(startOfToday.getTime() - 6 * 24 * 3600 * 1000);
       periodLabel = 'Last 7 Days';
     } else if (filter === '30days') {
-      startDate = new Date(startOfToday);
-      startDate.setDate(startDate.getDate() - 29);
+      startDate = new Date(startOfToday.getTime() - 29 * 24 * 3600 * 1000);
       periodLabel = 'Last 30 Days';
     } else if (filter === 'lastmonth') {
-      startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
-      endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      const [yrStr, moStr] = todayIstStr.split('-');
+      const yr = parseInt(yrStr, 10);
+      const mo = parseInt(moStr, 10); // 1..12
+      const prevYear = mo === 1 ? yr - 1 : yr;
+      const prevMonth = mo === 1 ? 12 : mo - 1;
+      const lastDayPrevMonth = new Date(prevYear, prevMonth, 0).getDate();
+      const pmStr = String(prevMonth).padStart(2, '0');
+      startDate = new Date(`${prevYear}-${pmStr}-01T00:00:00+05:30`);
+      endDate = new Date(`${prevYear}-${pmStr}-${String(lastDayPrevMonth).padStart(2, '0')}T23:59:59.999+05:30`);
       periodLabel = 'Last Month';
     } else if (filter === 'all') {
       startDate = new Date(0);
       endDate = new Date(2099, 11, 31, 23, 59, 59, 999);
       periodLabel = 'All Time';
     } else if (filter === 'custom' || qStartDate || qEndDate) {
-      startDate = qStartDate ? new Date(`${qStartDate}T00:00:00`) : new Date(0);
-      endDate = qEndDate ? new Date(`${qEndDate}T23:59:59.999`) : new Date(endOfToday);
+      startDate = qStartDate ? new Date(`${qStartDate}T00:00:00+05:30`) : new Date(0);
+      endDate = qEndDate ? new Date(`${qEndDate}T23:59:59.999+05:30`) : new Date(endOfToday);
       periodLabel = qStartDate && qEndDate ? `${qStartDate} to ${qEndDate}` : 'Custom Date Range';
     }
 
-    // Fetch Orders, Inventory, and Expenses in parallel
+    // Fetch Orders (only inside the selected period, using the createdAt index), Inventory, and Expenses in parallel
     const [allOrders, allInventory, allExpenses] = await Promise.all([
       Order.findAll({
-        include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product' }] }],
+        where: filter === 'all' ? undefined : { createdAt: { [Op.between]: [startDate, endDate] } },
+        include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product', attributes: { exclude: ['description', 'ingredients', 'image'] } }] }],
         order: [['createdAt', 'DESC']]
       }),
       Inventory.findAll({ order: [['name', 'ASC']] }),
@@ -126,13 +146,11 @@ router.get('/', staffOnly, async (req, res) => {
       return sum + itemsSum;
     }, 0);
 
-    // Paid vs Unpaid Orders
+    // Paid vs Unpaid Orders (Only orders explicitly marked paid are counted as Paid)
     const paidOrders = validOrders.filter(o =>
-      o.status === 'served' ||
       (o.paymentStatus || '').toLowerCase() === 'paid'
     );
     const unpaidOrders = validOrders.filter(o =>
-      o.status !== 'served' &&
       (o.paymentStatus || '').toLowerCase() !== 'paid'
     );
 
@@ -187,7 +205,7 @@ router.get('/', staffOnly, async (req, res) => {
     const paidTaxableSubtotal = paidOrders.reduce((sum, o) => sum + getOrderItemsSubtotal(o), 0);
     const paidGstCollected = paidOrders.reduce((sum, o) => sum + getOrderItemsSubtotal(o) * (getOrderGstRate(o) / 100), 0);
 
-    // Inventory Financials
+    // Inventory Financials (Scoped to the selected date period so old stock purchases don't skew Today/Yesterday P&L)
     let inventoryPurchaseCost = 0;
     let inventorySalesRevenue = 0;
     let inventoryWastageCost = 0;
@@ -201,9 +219,13 @@ router.get('/', staffOnly, async (req, res) => {
       const soldU = Number(inv.soldUnits || 0);
       const netPL = sRev - pCost;
 
-      inventoryPurchaseCost += pCost;
-      inventorySalesRevenue += sRev;
-      inventoryWastageCost += wCost;
+      const invDate = new Date(inv.createdAt || inv.lastUpdated || Date.now());
+      const isInvInPeriod = filter === 'all' || (invDate >= startDate && invDate <= endDate);
+      if (isInvInPeriod) {
+        inventoryPurchaseCost += pCost;
+        inventorySalesRevenue += sRev;
+        inventoryWastageCost += wCost;
+      }
 
       return {
         id: String(inv.id),
@@ -319,15 +341,9 @@ router.get('/', staffOnly, async (req, res) => {
         sharePercent: grossRevenue > 0 ? Number(((cat.revenue / grossRevenue) * 100).toFixed(1)) : 0
       }));
 
-    // Day-by-Day Financial Ledger
+    // Day-by-Day Financial Ledger (grouped by IST date so Hostinger UTC matches Indian calendar days)
     const ledgerMap = {};
-    const getDayKey = (d) => {
-      const dt = new Date(d);
-      const yyyy = dt.getFullYear();
-      const mm = String(dt.getMonth() + 1).padStart(2, '0');
-      const dd = String(dt.getDate()).padStart(2, '0');
-      return `${yyyy}-${mm}-${dd}`;
-    };
+    const getDayKey = (d) => getIstDateString(d);
 
     validOrders.forEach(o => {
       const key = getDayKey(o.createdAt || Date.now());
@@ -345,7 +361,7 @@ router.get('/', staffOnly, async (req, res) => {
         };
       }
       const amt = Number(o.totalAmount || 0);
-      const isPaid = o.status === 'served' || (o.paymentStatus || '').toLowerCase() === 'paid';
+      const isPaid = (o.paymentStatus || '').toLowerCase() === 'paid';
       const method = (o.paymentMethod || 'Cash').toLowerCase();
       const orderGst = getOrderItemsSubtotal(o) * (getOrderGstRate(o) / 100);
 

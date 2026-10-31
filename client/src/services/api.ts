@@ -14,9 +14,47 @@ export const BASE_URL = import.meta.env.VITE_BACKEND_URL || (
 );
 export const API_URL = `${BASE_URL}/api`;
 
+// Fast GET layer:
+// 1. Identical GET requests fired at the same moment by different screens share ONE network call.
+// 2. If the server returns exactly the same data as last time, we return the SAME object reference,
+//    so screens can skip re-rendering entirely (no lag while polling).
+const lastGetResponses = new Map<string, { text: string; data: any }>();
+const inFlightGets = new Map<string, Promise<any>>();
+
+const parseResponseBody = (endpoint: string, method: string, text: string) => {
+  if (method === 'GET') {
+    const prev = lastGetResponses.get(endpoint);
+    if (prev && prev.text === text) return prev.data;
+    const data = text ? JSON.parse(text) : null;
+    lastGetResponses.set(endpoint, { text, data });
+    return data;
+  }
+  return text ? JSON.parse(text) : null;
+};
+
 // Fetch wrapper with JWT injection & retry resilience
-const request = async (endpoint: string, options: RequestInit = {}) => {
-  const token = localStorage.getItem('cakeflow_token');
+const request = async (endpoint: string, options: RequestInit = {}): Promise<any> => {
+  const method = (options.method || 'GET').toUpperCase();
+  if (method === 'GET') {
+    const existing = inFlightGets.get(endpoint);
+    if (existing) return existing;
+    const p = performRequest(endpoint, options, method).finally(() => {
+      inFlightGets.delete(endpoint);
+    });
+    inFlightGets.set(endpoint, p);
+    return p;
+  }
+  // Writes: never let a GET that started before this write be re-used afterwards (avoids stale reads)
+  inFlightGets.clear();
+  try {
+    return await performRequest(endpoint, options, method);
+  } finally {
+    inFlightGets.clear();
+  }
+};
+
+const performRequest = async (endpoint: string, options: RequestInit, method: string): Promise<any> => {
+  const token = sessionStorage.getItem('cakeflow_token') || localStorage.getItem('cakeflow_token');
   const headers = {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -32,6 +70,8 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
     if (!response.ok) {
       if (response.status === 401 && token) {
         // Staff token expired / invalid (e.g. after JWT_SECRET change): force a fresh login
+        sessionStorage.removeItem('cakeflow_token');
+        sessionStorage.removeItem('cakeflow_user');
         localStorage.removeItem('cakeflow_token');
         localStorage.removeItem('cakeflow_user');
         const path = window.location.pathname;
@@ -43,10 +83,10 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
       throw new Error(errorData.message || `Request failed with status ${response.status}`);
     }
 
-    return await response.json();
+    return parseResponseBody(endpoint, method, await response.text());
   } catch (err: any) {
-    if (err.name === 'TypeError' || err.message?.includes('Failed to fetch')) {
-      // Retry once after 600ms if server was momentarily restarting
+    if (method === 'GET' && (err.name === 'TypeError' || err.message?.includes('Failed to fetch'))) {
+      // Retry GET once after 600ms if server was momentarily restarting (never auto-retry POST/PUT/DELETE to prevent duplicates)
       await new Promise(r => setTimeout(r, 600));
       try {
         const retryResponse = await fetch(`${API_URL}${endpoint}`, {
@@ -57,7 +97,7 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
           const errorData = await retryResponse.json().catch(() => ({}));
           throw new Error(errorData.message || `Request failed with status ${retryResponse.status}`);
         }
-        return await retryResponse.json();
+        return parseResponseBody(endpoint, method, await retryResponse.text());
       } catch (retryErr: any) {
         throw new Error(retryErr.message || 'Network error, please check connection.');
       }
@@ -73,24 +113,39 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ username, password })
     });
+    sessionStorage.setItem('cakeflow_token', data.token);
+    sessionStorage.setItem('cakeflow_user', JSON.stringify(data.user));
     localStorage.setItem('cakeflow_token', data.token);
     localStorage.setItem('cakeflow_user', JSON.stringify(data.user));
     return data.user;
   },
   logout: () => {
+    sessionStorage.removeItem('cakeflow_token');
+    sessionStorage.removeItem('cakeflow_user');
     localStorage.removeItem('cakeflow_token');
     localStorage.removeItem('cakeflow_user');
   },
   getCurrentUser: () => {
     try {
-      const userStr = localStorage.getItem('cakeflow_user');
+      const userStr = sessionStorage.getItem('cakeflow_user') || localStorage.getItem('cakeflow_user');
       return (userStr && userStr !== 'undefined') ? JSON.parse(userStr) : null;
     } catch (e) {
       console.error('Failed to parse cached user:', e);
+      sessionStorage.removeItem('cakeflow_user');
+      sessionStorage.removeItem('cakeflow_token');
       localStorage.removeItem('cakeflow_user');
       localStorage.removeItem('cakeflow_token');
       return null;
     }
+  },
+  getStaffCredentials: () => {
+    return request('/auth/staff-credentials');
+  },
+  updateStaffCredentials: (target: 'admin' | 'chef' | 'servant', username: string, password: string) => {
+    return request('/auth/staff-credentials', {
+      method: 'PUT',
+      body: JSON.stringify({ target, username, password })
+    });
   }
 };
 

@@ -96,16 +96,45 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
     const sgst = totalGstAmount / 2;
     const grandTotal = subtotal + totalGstAmount;
 
-    const itemsHtml = order.items?.map((item: any) => {
-      const pName = item.product?.name || item.name || 'Food Item';
-      const price = item.price || item.product?.price || 0;
+    const smileySvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: -4px; display: inline-block; flex-shrink: 0;"><circle cx="12" cy="12" r="10.5" stroke="#000" stroke-width="1.8" fill="none"/><circle cx="8.5" cy="8.8" r="1.5" fill="#000" stroke="none"/><circle cx="15.5" cy="8.8" r="1.5" fill="#000" stroke="none"/><path d="M7.5 13.8 C8.8 17.5, 15.2 17.5, 16.5 13.8" stroke="#000" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>`;
+
+    const groupedPrintItems = (() => {
+      const map = new Map<string, { name: string; price: number; quantity: number; instructions: string[] }>();
+      for (const item of (order.items || [])) {
+        if ((item as any).status === 'cancelled') continue;
+        const pName = (item.product?.name || item.name || 'Food Item').trim();
+        const price = Number(item.price ?? item.product?.price ?? 0);
+        const qty = Number(item.quantity ?? 1);
+        const key = `${pName.toLowerCase()}::${price}`;
+        const existing = map.get(key);
+        if (existing) {
+          existing.quantity += qty;
+          if (item.instructions && !existing.instructions.includes(item.instructions)) {
+            existing.instructions.push(item.instructions);
+          }
+        } else {
+          map.set(key, {
+            name: pName,
+            price,
+            quantity: qty,
+            instructions: item.instructions ? [item.instructions] : []
+          });
+        }
+      }
+      return Array.from(map.values());
+    })();
+
+    const itemsHtml = groupedPrintItems.map((item, idx) => {
+      const noteText = item.instructions.join(', ');
       return `
-        <div style="margin-bottom: 5px;">
-          <div style="display: flex; justify-content: space-between; font-size: 11px;">
-            <span style="font-weight: 600;">${item.quantity}x ${pName}</span>
-            <span style="font-family: monospace; font-weight: bold;">₹${price * item.quantity}</span>
+        <div style="margin-bottom: 4px;">
+          <div class="item-row">
+            <span>${idx + 1}.</span>
+            <span style="padding-right: 4px; word-break: break-word;">${item.name}</span>
+            <span style="text-align: center;">${item.quantity}</span>
+            <span style="text-align: right;">₹${item.price * item.quantity}</span>
           </div>
-          ${item.instructions ? `<div style="font-size: 9px; color: #4C1D95; margin-top: 1px;">📌 Note: "${item.instructions}"</div>` : ''}
+          ${noteText ? `<div style="font-size: 9px; color: #000; margin-top: 1px; padding-left: 28px;">Note: "${noteText}"</div>` : ''}
         </div>
       `;
     }).join('') || '';
@@ -127,7 +156,7 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
               margin: 0mm;
             }
             body {
-              font-family: 'Courier New', Courier, monospace, monospace;
+              font-family: 'Courier New', Courier, monospace;
               width: 72mm;
               max-width: 72mm;
               margin: 0 auto;
@@ -151,7 +180,7 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
             }
             .header .subtitle {
               font-size: 10px;
-              color: #222;
+              color: #000;
               font-weight: 700;
             }
             .header .title-tag {
@@ -174,7 +203,10 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
             .meta-grid {
               display: grid;
               grid-template-columns: 1fr 1fr;
-              font-size: 10px;
+              font-size: 10.5px;
+              font-weight: 700;
+              color: #000;
+              line-height: 1.45;
               border-bottom: 1px dashed #000;
               padding-bottom: 6px;
               margin-bottom: 6px;
@@ -185,15 +217,26 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
               margin-bottom: 6px;
             }
             .table-head {
-              display: flex;
-              justify-content: space-between;
-              font-size: 10px;
+              display: grid;
+              grid-template-columns: 28px 1fr 36px 56px;
+              align-items: center;
+              font-size: 9.5px;
               font-weight: 900;
               color: #000;
               text-transform: uppercase;
               border-bottom: 1px solid #000;
-              padding-bottom: 2px;
-              margin-bottom: 4px;
+              padding-bottom: 3px;
+              margin-bottom: 5px;
+            }
+            .item-row {
+              display: grid;
+              grid-template-columns: 28px 1fr 36px 56px;
+              align-items: start;
+              font-size: 10px;
+              font-weight: 500;
+              color: #000;
+              -webkit-text-stroke: 0.3px #000;
+              line-height: 1.35;
             }
             .summary {
               font-size: 10.5px;
@@ -242,32 +285,34 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
         </head>
         <body>
           <div class="header">
-            <h2>🍰 VPN Restaurant</h2>
-            <div class="subtitle">Thiruvarur - Nagapattinam Rd, Melakottaivasal, Nagapattinam, Tamil Nadu 611106</div>
-            <div class="subtitle">GSTIN: 33AAAAA0000A1Z5</div>
-            <div class="title-tag">*** BILLING & TAX INVOICE ***</div>
+            <h2>VPN Restaurant</h2>
+            <div class="subtitle">Thiruvarur - Nagapattinam Rd, Melakottaivasal</div>
+            <div class="subtitle">Nagapattinam, Tamil Nadu 611001</div>
+            <div class="title-tag">*** TAX INVOICE ***</div>
           </div>
 
           <div class="status-banner">
             <span>PAID / SETTLED</span>
-            <span>Via Cash</span>
+            <span>Via ${order.paymentMethod || 'Cash'}</span>
           </div>
 
           <div class="meta-grid">
             <div>
-              <div><b>Table:</b> Table ${order.tableNumber}</div>
-              <div><b>Guest:</b> ${order.customerName || 'Walk-in Guest'}</div>
+              <div>Table: Table ${order.tableNumber}</div>
+              <div>Guest: ${order.customerName || 'Walk-in Guest'}</div>
             </div>
             <div style="text-align: right;">
-              <div><b>Bill #:</b> #${order._id.slice(-6)}</div>
-              <div><b>Time:</b> ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+              <div>Bill #: #${order._id.slice(-6)}</div>
+              <div>Time: ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
             </div>
           </div>
 
           <div class="items-table">
             <div class="table-head">
+              <span>S.NO</span>
               <span>ITEM DESC</span>
-              <span>AMOUNT</span>
+              <span style="text-align: center;">QTY</span>
+              <span style="text-align: right;">AMOUNT</span>
             </div>
             ${itemsHtml}
           </div>
@@ -284,14 +329,19 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
 
           <div class="qr-section">
             <div class="qr-text">
-              <b>📱 Digital Receipt QR</b><br>
+              <b>Digital Receipt QR</b><br>
               Scan to view order invoice
             </div>
             ${qrCodeUrl ? `<img src="${qrCodeUrl}" style="width: 48px; height: 48px; border: 1px solid #000;" />` : ''}
           </div>
 
           <div class="footer">
-            Thank you! Visit again!
+            <div>Thank you! Visit again!</div>
+            <div style="font-size: 9.5px; font-weight: 700; margin-top: 4px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+              ${smileySvg}
+              <span>Software Developed By Murugan Solution</span>
+              ${smileySvg}
+            </div>
           </div>
 
           <script>
@@ -420,6 +470,7 @@ export const BillingView: React.FC<BillingViewProps> = ({ onLogout }) => {
                         key={order._id}
                         id={index === 0 ? "orderRow1" : `orderRow-${index + 1}`}
                         data-testid={index === 0 ? "orderRow1" : `orderRow-${index + 1}`}
+                        onClick={() => setSelectedOrder(order)}
                         className="hover:bg-[#4C1D95]/5 transition-colors cursor-pointer group"
                       >
                         <td className="p-4 font-mono font-bold text-[#4C1D95]">#{order._id.slice(-6)}</td>

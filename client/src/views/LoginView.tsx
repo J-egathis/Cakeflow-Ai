@@ -31,20 +31,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     setError('');
     setLoading(true);
     try {
-      const cleanUser = username.trim().toLowerCase();
-      if (cleanUser === 'customer' && password === 'customer123') {
-        const customerUser: User = {
-          id: 'customer_table_1',
-          username: 'Table 1 Guest',
-          role: 'customer'
-        };
-        localStorage.setItem('cakeflow_token', 'mock_customer_token');
-        localStorage.setItem('cakeflow_user', JSON.stringify(customerUser));
-        setTimeout(() => onLoginSuccess(customerUser), 1200);
-        return;
-      }
       const user = await authApi.login(username, password);
-      setTimeout(() => onLoginSuccess(user), 1200);
+      setTimeout(() => onLoginSuccess(user), 600);
     } catch (err: any) {
       setError(err.message || 'Login failed. Please check credentials.');
       setLoading(false);
@@ -62,9 +50,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           username: `Table ${tableNum} Guest`,
           role: 'customer'
         };
-        localStorage.setItem('cakeflow_token', 'mock_customer_token');
-        localStorage.setItem('cakeflow_user', JSON.stringify(customerUser));
-        setTimeout(() => onLoginSuccess(customerUser), 1200);
+        sessionStorage.setItem('cakeflow_token', 'mock_customer_token');
+        sessionStorage.setItem('cakeflow_user', JSON.stringify(customerUser));
+        setTimeout(() => onLoginSuccess(customerUser), 600);
       } else {
         let defaultUsername = '';
         let defaultPassword = 'chef123';

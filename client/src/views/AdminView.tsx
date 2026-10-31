@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { analyticsApi, orderApi, tableApi, productApi, categoryApi, getSocket, BASE_URL } from '../services/api';
+import { analyticsApi, orderApi, tableApi, productApi, categoryApi, authApi, getSocket, BASE_URL } from '../services/api';
 import { SmartTable, Order, Product } from '../types';
 import { 
   TrendingUp, Users, Clock, ShoppingBag, 
@@ -10,9 +10,8 @@ import {
   Search, ShieldAlert, Check, X, Printer, Receipt, DollarSign,
   Coffee, ChevronRight, PieChart as PieIcon, LogOut, QrCode, Download,
   Trash2, Trash, CheckSquare, Square, Plus, Utensils, Tag, Image, Upload, Link as LinkIcon, Camera,
-  Eye, EyeOff, Edit, Edit2, XCircle, PackageCheck, PackageX
-, Settings
-, Menu, ChevronDown, Package, Wallet
+  Eye, EyeOff, Edit, Edit2, XCircle, PackageCheck, PackageX,
+  Settings, Menu, ChevronDown, Package, Wallet, KeyRound, ChefHat, UserCheck
 } from 'lucide-react';
 import { TableManagement } from '../components/TableManagement';
 import { SmartReceiptModal } from '../components/SmartReceiptModal';
@@ -27,8 +26,8 @@ interface AdminViewProps {
   onLogout: () => void;
 }
 
-type AdminTab = 'overview' | 'reception' | 'tables' | 'foods' | 'sold_unsold' | 'inventory' | 'accounts' | 'expenses';
-const VALID_ADMIN_TABS: AdminTab[] = ['overview', 'reception', 'tables', 'foods', 'sold_unsold', 'inventory', 'accounts', 'expenses'];
+type AdminTab = 'overview' | 'reception' | 'tables' | 'foods' | 'sold_unsold' | 'inventory' | 'accounts' | 'expenses' | 'staff_logins';
+const VALID_ADMIN_TABS: AdminTab[] = ['overview', 'reception', 'tables', 'foods', 'sold_unsold', 'inventory', 'accounts', 'expenses', 'staff_logins'];
 
 export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -249,6 +248,123 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
 
     setShowGstModal(false);
     addToast(`✅ GST Tax Rate updated to ${parsed}% (${parsed/2}% CGST + ${parsed/2}% SGST)! Applied to all active & new bills.`, 'success');
+  };
+
+  // 🔑 Staff Login Credentials State (Admin, Chef & Servant Individual Options)
+  const [adminUsernameInput, setAdminUsernameInput] = useState<string>('admin');
+  const [adminPasswordInput, setAdminPasswordInput] = useState<string>('admin123');
+  const [adminSavedUsername, setAdminSavedUsername] = useState<string>('admin');
+  const [adminSavedPassword, setAdminSavedPassword] = useState<string>('admin123');
+  const [adminUpdatedAt, setAdminUpdatedAt] = useState<string | null>(null);
+  const [showAdminPassword, setShowAdminPassword] = useState<boolean>(false);
+  const [savingAdminCreds, setSavingAdminCreds] = useState<boolean>(false);
+
+  const [chefUsernameInput, setChefUsernameInput] = useState<string>('chef');
+  const [chefPasswordInput, setChefPasswordInput] = useState<string>('chef123');
+  const [chefSavedUsername, setChefSavedUsername] = useState<string>('chef');
+  const [chefSavedPassword, setChefSavedPassword] = useState<string>('chef123');
+  const [chefUpdatedAt, setChefUpdatedAt] = useState<string | null>(null);
+  const [showChefPassword, setShowChefPassword] = useState<boolean>(false);
+  const [savingChefCreds, setSavingChefCreds] = useState<boolean>(false);
+
+  const [servantUsernameInput, setServantUsernameInput] = useState<string>('waiter');
+  const [servantPasswordInput, setServantPasswordInput] = useState<string>('waiter123');
+  const [servantSavedUsername, setServantSavedUsername] = useState<string>('waiter');
+  const [servantSavedPassword, setServantSavedPassword] = useState<string>('waiter123');
+  const [servantUpdatedAt, setServantUpdatedAt] = useState<string | null>(null);
+  const [showServantPassword, setShowServantPassword] = useState<boolean>(false);
+  const [savingServantCreds, setSavingServantCreds] = useState<boolean>(false);
+  const [loadingStaffCreds, setLoadingStaffCreds] = useState<boolean>(false);
+
+  const fetchStaffCredentials = async () => {
+    try {
+      setLoadingStaffCreds(true);
+      const data = await authApi.getStaffCredentials();
+      if (data?.admin) {
+        setAdminUsernameInput(data.admin.username || 'admin');
+        setAdminPasswordInput(data.admin.password || 'admin123');
+        setAdminSavedUsername(data.admin.username || 'admin');
+        setAdminSavedPassword(data.admin.password || 'admin123');
+        setAdminUpdatedAt(data.admin.updatedAt || null);
+      }
+      if (data?.chef) {
+        setChefUsernameInput(data.chef.username || 'chef');
+        setChefPasswordInput(data.chef.password || 'chef123');
+        setChefSavedUsername(data.chef.username || 'chef');
+        setChefSavedPassword(data.chef.password || 'chef123');
+        setChefUpdatedAt(data.chef.updatedAt || null);
+      }
+      if (data?.servant) {
+        setServantUsernameInput(data.servant.username || 'waiter');
+        setServantPasswordInput(data.servant.password || 'waiter123');
+        setServantSavedUsername(data.servant.username || 'waiter');
+        setServantSavedPassword(data.servant.password || 'waiter123');
+        setServantUpdatedAt(data.servant.updatedAt || null);
+      }
+    } catch (err) {
+      console.error('Failed to load staff credentials:', err);
+    } finally {
+      setLoadingStaffCreds(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStaffCredentials();
+  }, []);
+
+  const handleUpdateStaffCredentials = async (target: 'admin' | 'chef' | 'servant', e: React.FormEvent) => {
+    e.preventDefault();
+    const uName = (target === 'admin' ? adminUsernameInput : target === 'chef' ? chefUsernameInput : servantUsernameInput).trim();
+    const pWord = (target === 'admin' ? adminPasswordInput : target === 'chef' ? chefPasswordInput : servantPasswordInput).trim();
+
+    if (!uName || !pWord) {
+      addToast('⚠️ Username and password cannot be empty!', 'danger');
+      return;
+    }
+
+    if (target === 'admin') setSavingAdminCreds(true);
+    else if (target === 'chef') setSavingChefCreds(true);
+    else setSavingServantCreds(true);
+
+    try {
+      const res = await authApi.updateStaffCredentials(target, uName, pWord);
+      if (target === 'admin' && res?.admin) {
+        setAdminUsernameInput(res.admin.username);
+        setAdminPasswordInput(res.admin.password);
+        setAdminSavedUsername(res.admin.username);
+        setAdminSavedPassword(res.admin.password);
+        setAdminUpdatedAt(res.admin.updatedAt || new Date().toISOString());
+        try {
+          const currentUser = authApi.getCurrentUser();
+          if (currentUser && currentUser.role === 'admin') {
+            const updatedUser = { ...currentUser, username: res.admin.username };
+            sessionStorage.setItem('cakeflow_user', JSON.stringify(updatedUser));
+            localStorage.setItem('cakeflow_user', JSON.stringify(updatedUser));
+          }
+        } catch {}
+        addToast(`✅ Admin Login Updated! Username: "${res.admin.username}"`, 'success');
+      } else if (target === 'chef' && res?.chef) {
+        setChefUsernameInput(res.chef.username);
+        setChefPasswordInput(res.chef.password);
+        setChefSavedUsername(res.chef.username);
+        setChefSavedPassword(res.chef.password);
+        setChefUpdatedAt(res.chef.updatedAt || new Date().toISOString());
+        addToast(`✅ Chef Login Updated! Username: "${res.chef.username}"`, 'success');
+      } else if (target === 'servant' && res?.servant) {
+        setServantUsernameInput(res.servant.username);
+        setServantPasswordInput(res.servant.password);
+        setServantSavedUsername(res.servant.username);
+        setServantSavedPassword(res.servant.password);
+        setServantUpdatedAt(res.servant.updatedAt || new Date().toISOString());
+        addToast(`✅ Servant Login Updated! Username: "${res.servant.username}"`, 'success');
+      }
+    } catch (err: any) {
+      addToast(`⚠️ ${err.message || 'Failed to update credentials'}`, 'danger');
+    } finally {
+      if (target === 'admin') setSavingAdminCreds(false);
+      else if (target === 'chef') setSavingChefCreds(false);
+      else setSavingServantCreds(false);
+    }
   };
 
   const [availableCategories, setAvailableCategories] = useState<string[]>([]);
@@ -708,23 +824,37 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
     const socket = getSocket();
     socket.emit('join_room', 'admins');
 
-    socket.on('new_order', (newOrder: Order) => {
-      addToast(`🔔 New Order #${newOrder._id.slice(-4)} placed for Table ${newOrder.tableNumber}! Total: ₹${newOrder.totalAmount}`, 'info');
-      fetchReceptionOrders();
-      fetchAdminData(dateFilter);
-    });
+    // Coalesce bursts of socket events (one order update can emit 3-4 events) into ONE quick refresh
+    let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let liveRefreshAnalytics = false;
+    const scheduleLiveRefresh = (withAnalytics: boolean) => {
+      if (withAnalytics) liveRefreshAnalytics = true;
+      if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+      liveRefreshTimer = setTimeout(() => {
+        liveRefreshTimer = null;
+        fetchReceptionOrders();
+        if (liveRefreshAnalytics) {
+          liveRefreshAnalytics = false;
+          fetchAdminData(dateFilter, customStartDate, customEndDate, true);
+        }
+      }, 200);
+    };
 
-    socket.on('order_updated', (updatedOrder: Order) => {
+    const onNewOrder = (newOrder: Order) => {
+      addToast(`🔔 New Order #${newOrder._id.slice(-4)} placed for Table ${newOrder.tableNumber}! Total: ₹${newOrder.totalAmount}`, 'info');
+      scheduleLiveRefresh(true);
+    };
+
+    const onOrderUpdated = (updatedOrder: Order) => {
       if (updatedOrder.status === 'ready') {
         addToast(`🔔 Chef Food Ready! Table ${updatedOrder.tableNumber} is ready for Reception Billing!`, 'success');
       } else if (updatedOrder.status === 'cancelled') {
         addToast(`⚠️ Order #${updatedOrder._id.slice(-4)} for Table ${updatedOrder.tableNumber} was CANCELLED!`, 'danger');
       }
-      fetchReceptionOrders();
-      fetchAdminData(dateFilter);
-    });
+      scheduleLiveRefresh(true);
+    };
 
-    socket.on('table_status_updated', (updatedTable?: SmartTable) => {
+    const onTableStatusUpdated = (updatedTable?: SmartTable) => {
       if (updatedTable && updatedTable.tableNumber) {
         setAllSystemTables(prev => {
           const idx = prev.findIndex(t => Number(t.tableNumber) === Number(updatedTable.tableNumber));
@@ -741,10 +871,10 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
       } else {
         fetchSystemTables();
       }
-      fetchReceptionOrders();
-    });
+      scheduleLiveRefresh(false);
+    };
 
-    socket.on('table_deleted', (data?: { tableNumber: number }) => {
+    const onTableDeleted = (data?: { tableNumber: number }) => {
       if (data && data.tableNumber) {
         setAllSystemTables(prev => {
           const next = prev.filter(t => Number(t.tableNumber) !== Number(data.tableNumber));
@@ -754,14 +884,9 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
       } else {
         fetchSystemTables();
       }
-    });
+    };
 
-    socket.on('product:created', scheduleProductsRefresh);
-    socket.on('product:updated', scheduleProductsRefresh);
-    socket.on('product:deleted', scheduleProductsRefresh);
-    socket.on('category:updated', scheduleProductsRefresh);
-
-    socket.on('chef_unsold_report', (report: any) => {
+    const onChefUnsoldReport = (report: any) => {
       const fName = report?.foodName || report?.name;
       if (fName) {
         addToast(
@@ -769,50 +894,65 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
           'danger'
         );
       }
-    });
+    };
 
-    // 4-second silent background auto-refresh interval for Admin Dashboard & Reception Desk
+    socket.on('new_order', onNewOrder);
+    socket.on('order_updated', onOrderUpdated);
+    socket.on('table_status_updated', onTableStatusUpdated);
+    socket.on('table_deleted', onTableDeleted);
+    socket.on('product:created', scheduleProductsRefresh);
+    socket.on('product:updated', scheduleProductsRefresh);
+    socket.on('product:deleted', scheduleProductsRefresh);
+    socket.on('category:updated', scheduleProductsRefresh);
+    socket.on('chef_unsold_report', onChefUnsoldReport);
+
+    // Silent background safety-net refresh (sockets already push live changes instantly).
+    // Skipped while the browser tab is hidden so the device & server are not loaded for nothing.
     const autoRefreshInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       fetchReceptionOrders();
-    }, 4000);
+    }, 5000);
+
+    const handleVisibility = () => {
+      if (!document.hidden) scheduleLiveRefresh(true);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       clearInterval(autoRefreshInterval);
-      socket.off('new_order');
-      socket.off('order_updated');
-      socket.off('table_status_updated');
-      socket.off('table_deleted');
-      socket.off('product:created');
-      socket.off('product:updated');
-      socket.off('product:deleted');
-      socket.off('category:updated');
-      socket.off('chef_unsold_report');
+      if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      // Remove ONLY this view's handlers (child panels like Accounts / Inventory keep their own live listeners)
+      socket.off('new_order', onNewOrder);
+      socket.off('order_updated', onOrderUpdated);
+      socket.off('table_status_updated', onTableStatusUpdated);
+      socket.off('table_deleted', onTableDeleted);
+      socket.off('product:created', scheduleProductsRefresh);
+      socket.off('product:updated', scheduleProductsRefresh);
+      socket.off('product:deleted', scheduleProductsRefresh);
+      socket.off('category:updated', scheduleProductsRefresh);
+      socket.off('chef_unsold_report', onChefUnsoldReport);
     };
   }, [dateFilter]);
 
   const defaultDashboardData = {
-    grossRevenue: 4250,
-    totalOrders: 18,
-    avgPrepTimeMins: 14,
-    liveActiveTables: 3,
+    grossRevenue: 0,
+    totalOrders: 0,
+    avgPrepTimeMins: 0,
+    liveActiveTables: 0,
     salesBreakdown: [
-      { name: 'Today', sales: 4250, count: 18 }
+      { name: 'Today', sales: 0, count: 0 }
     ],
-    categoryBreakdown: [
-      { category: 'Cakes', sales: 2150, percent: 50 },
-      { category: 'Snacks', sales: 1200, percent: 28 },
-      { category: 'Juice', sales: 900, percent: 14 },
-      { category: 'Chats', sales: 400, percent: 8 }
-    ],
+    categoryBreakdown: [] as Array<{ category: string; sales: number; percent: number }>,
     peakHours: [
-      { hour: '8 AM', orders: 2 },
-      { hour: '10 AM', orders: 3 },
-      { hour: '12 PM', orders: 6 },
-      { hour: '2 PM', orders: 8 },
-      { hour: '4 PM', orders: 4 },
-      { hour: '6 PM', orders: 7 },
-      { hour: '8 PM', orders: 5 },
-      { hour: '10 PM', orders: 2 }
+      { hour: '8 AM', orders: 0 },
+      { hour: '10 AM', orders: 0 },
+      { hour: '12 PM', orders: 0 },
+      { hour: '2 PM', orders: 0 },
+      { hour: '4 PM', orders: 0 },
+      { hour: '6 PM', orders: 0 },
+      { hour: '8 PM', orders: 0 },
+      { hour: '10 PM', orders: 0 }
     ],
     recentCompletedOrders: []
   };
@@ -855,23 +995,29 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
   const fetchAdminData = async (
     filter = dateFilter, 
     startDate = customStartDate, 
-    endDate = customEndDate
+    endDate = customEndDate,
+    silent = false
   ) => {
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await analyticsApi.getDashboard(filter, startDate, endDate);
       setAnalytics(data);
     } catch (err) {
       console.error('Failed to fetch store analytics, using default dashboard data:', err);
-      setAnalytics(defaultDashboardData);
+      if (!silent) setAnalytics(defaultDashboardData);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
+
+  // Last orders payload reference: if the server data has not changed, skip all state updates (no re-render lag)
+  const lastReceptionOrdersRef = React.useRef<any>(null);
 
   const fetchReceptionOrders = async () => {
     try {
       const allOrders = await orderApi.getAll({ timeframe: 'all' });
+      if (allOrders === lastReceptionOrdersRef.current) return;
+      lastReceptionOrdersRef.current = allOrders;
       setAllSystemOrders(allOrders || []);
 
       // Show orders that are ready or quality_check as pending bills (waiting to be settled)
@@ -954,19 +1100,6 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
     const activeGstRate = currentGlobalGst;
     const grandTotalWithGst = itemsSubtotal + (itemsSubtotal * (activeGstRate / 100));
 
-    // ⚡ Direct 80mm Thermal POS Auto-Print
-    handleDirectPrintReceipt(targetOrder);
-
-    // 1. INSTANT 0ms UI UPDATE: Close modal & remove card immediately so user never waits!
-    setSelectedReceiptOrder(null);
-    playCashRegisterChime();
-    addToast(
-      `💰 ${selectedMethodLabel.toUpperCase()} PAYMENT CONFIRMED! ₹${grandTotalWithGst.toFixed(2)} received for Table ${targetOrder.tableNumber}. Saved in History & Table released!`,
-      'success'
-    );
-
-    // Optimistically update local reception orders & payment history lists (locking GST rate & Grand Total onto this bill)
-    setReceptionOrders(prev => prev.filter(o => o._id !== targetOrder._id));
     const settledOrder = {
       ...targetOrder,
       gstRate: activeGstRate,
@@ -975,15 +1108,33 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
       paymentStatus: 'paid' as const,
       paymentMethod: selectedMethodLabel as any
     };
+
+    // ⚡ Direct 80mm Thermal POS Auto-Print (uses settledOrder so Cash / UPI / Card prints accurately)
+    handleDirectPrintReceipt(settledOrder);
+
+    // 1. INSTANT 0ms UI UPDATE: Close modal, reset payment method to Cash & remove card immediately
+    setSelectedReceiptOrder(null);
+    setPaymentMethod('cash');
+    playCashRegisterChime();
+    addToast(
+      `💰 ${selectedMethodLabel.toUpperCase()} PAYMENT CONFIRMED! ₹${grandTotalWithGst.toFixed(2)} received for Table ${targetOrder.tableNumber}. Saved in History & Table released!`,
+      'success'
+    );
+
+    // Optimistically update local reception orders & payment history lists (locking GST rate & Grand Total onto this bill)
+    setReceptionOrders(prev => prev.filter(o => o._id !== targetOrder._id));
     setPaymentHistory(prev => [settledOrder, ...prev]);
 
     // 2. Perform background API settlement
     try {
       await orderApi.closeTable(targetOrder._id, selectedMethodLabel, activeGstRate);
-      fetchAdminData(dateFilter);
+      fetchAdminData(dateFilter, customStartDate, customEndDate, true);
       fetchReceptionOrders();
     } catch (err: any) {
       console.error('Background settlement sync error:', err);
+      setReceptionOrders(prev => [targetOrder, ...prev.filter(o => o._id !== targetOrder._id)]);
+      setPaymentHistory(prev => prev.filter(o => o._id !== targetOrder._id));
+      addToast(`⚠️ Failed to settle bill for Table ${targetOrder.tableNumber}. Please try again.`, 'danger');
     }
   };
 
@@ -1065,16 +1216,45 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
     const sgst = totalGstAmount / 2;
     const grandTotal = subtotal + totalGstAmount;
 
-    const itemsHtml = order.items?.map((item: any) => {
-      const pName = item.product?.name || item.name || 'Food Item';
-      const price = item.price || item.product?.price || 0;
+    const smileySvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: -4px; display: inline-block; flex-shrink: 0;"><circle cx="12" cy="12" r="10.5" stroke="#000" stroke-width="1.8" fill="none"/><circle cx="8.5" cy="8.8" r="1.5" fill="#000" stroke="none"/><circle cx="15.5" cy="8.8" r="1.5" fill="#000" stroke="none"/><path d="M7.5 13.8 C8.8 17.5, 15.2 17.5, 16.5 13.8" stroke="#000" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>`;
+
+    const groupedPrintItems = (() => {
+      const map = new Map<string, { name: string; price: number; quantity: number; instructions: string[] }>();
+      for (const item of (order.items || [])) {
+        if ((item as any).status === 'cancelled') continue;
+        const pName = (item.product?.name || item.name || 'Food Item').trim();
+        const price = Number(item.price ?? item.product?.price ?? 0);
+        const qty = Number(item.quantity ?? 1);
+        const key = `${pName.toLowerCase()}::${price}`;
+        const existing = map.get(key);
+        if (existing) {
+          existing.quantity += qty;
+          if (item.instructions && !existing.instructions.includes(item.instructions)) {
+            existing.instructions.push(item.instructions);
+          }
+        } else {
+          map.set(key, {
+            name: pName,
+            price,
+            quantity: qty,
+            instructions: item.instructions ? [item.instructions] : []
+          });
+        }
+      }
+      return Array.from(map.values());
+    })();
+
+    const itemsHtml = groupedPrintItems.map((item, idx) => {
+      const noteText = item.instructions.join(', ');
       return `
-        <div style="margin-bottom: 5px;">
-          <div style="display: flex; justify-content: space-between; font-size: 11px;">
-            <span style="font-weight: 600;">${item.quantity}x ${pName}</span>
-            <span style="font-family: monospace; font-weight: bold;">₹${price * item.quantity}</span>
+        <div style="margin-bottom: 4px;">
+          <div class="item-row">
+            <span>${idx + 1}.</span>
+            <span style="padding-right: 4px; word-break: break-word;">${item.name}</span>
+            <span style="text-align: center;">${item.quantity}</span>
+            <span style="text-align: right;">₹${item.price * item.quantity}</span>
           </div>
-          ${item.instructions ? `<div style="font-size: 9px; color: #4C1D95; margin-top: 1px;">📌 Note: "${item.instructions}"</div>` : ''}
+          ${noteText ? `<div style="font-size: 9px; color: #000; margin-top: 1px; padding-left: 28px;">Note: "${noteText}"</div>` : ''}
         </div>
       `;
     }).join('') || '';
@@ -1096,7 +1276,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               margin: 0mm;
             }
             body {
-              font-family: 'Courier New', Courier, monospace, monospace;
+              font-family: 'Courier New', Courier, monospace;
               width: 72mm;
               max-width: 72mm;
               margin: 0 auto;
@@ -1120,7 +1300,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
             }
             .header .subtitle {
               font-size: 10px;
-              color: #222;
+              color: #000;
               font-weight: 700;
             }
             .header .title-tag {
@@ -1143,7 +1323,10 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
             .meta-grid {
               display: grid;
               grid-template-columns: 1fr 1fr;
-              font-size: 10px;
+              font-size: 10.5px;
+              font-weight: 700;
+              color: #000;
+              line-height: 1.45;
               border-bottom: 1px dashed #000;
               padding-bottom: 6px;
               margin-bottom: 6px;
@@ -1154,15 +1337,26 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               margin-bottom: 6px;
             }
             .table-head {
-              display: flex;
-              justify-content: space-between;
-              font-size: 10px;
+              display: grid;
+              grid-template-columns: 28px 1fr 36px 56px;
+              align-items: center;
+              font-size: 9.5px;
               font-weight: 900;
               color: #000;
               text-transform: uppercase;
               border-bottom: 1px solid #000;
-              padding-bottom: 2px;
-              margin-bottom: 4px;
+              padding-bottom: 3px;
+              margin-bottom: 5px;
+            }
+            .item-row {
+              display: grid;
+              grid-template-columns: 28px 1fr 36px 56px;
+              align-items: start;
+              font-size: 10px;
+              font-weight: 500;
+              color: #000;
+              -webkit-text-stroke: 0.3px #000;
+              line-height: 1.35;
             }
             .summary {
               font-size: 10.5px;
@@ -1213,7 +1407,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
           <div class="header">
               <h2>VPN Restaurant</h2>
               <div class="subtitle">Thiruvarur - Nagapattinam Rd, Melakottaivasal</div>
-              <div class="subtitle">Nagapattinam, Tamil Nadu 611106</div>
+              <div class="subtitle">Nagapattinam, Tamil Nadu 611001</div>
             <div class="title-tag">*** TAX INVOICE ***</div>
           </div>
 
@@ -1224,19 +1418,21 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
 
           <div class="meta-grid">
             <div>
-              <div><b>Table:</b> Table ${order.tableNumber}</div>
-              <div><b>Guest:</b> ${order.customerName || 'Walk-in Guest'}</div>
+              <div>Table: Table ${order.tableNumber}</div>
+              <div>Guest: ${order.customerName || 'Walk-in Guest'}</div>
             </div>
             <div style="text-align: right;">
-              <div><b>Bill #:</b> #${order._id.slice(-6)}</div>
-              <div><b>Time:</b> ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+              <div>Bill #: #${order._id.slice(-6)}</div>
+              <div>Time: ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
             </div>
           </div>
 
           <div class="items-table">
             <div class="table-head">
+              <span>S.NO</span>
               <span>ITEM DESC</span>
-              <span>AMOUNT</span>
+              <span style="text-align: center;">QTY</span>
+              <span style="text-align: right;">AMOUNT</span>
             </div>
             ${itemsHtml}
           </div>
@@ -1253,14 +1449,19 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
 
           <div class="qr-section">
             <div class="qr-text">
-              <b>📱 Digital Receipt QR</b><br>
+              <b>Digital Receipt QR</b><br>
               Scan to view order invoice
             </div>
             ${qrCodeUrl ? `<img src="${qrCodeUrl}" style="width: 48px; height: 48px; border: 1px solid #000;" />` : ''}
           </div>
 
           <div class="footer">
-            Thank you! Visit again!
+            <div>Thank you! Visit again!</div>
+            <div style="font-size: 9.5px; font-weight: 700; margin-top: 4px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+              ${smileySvg}
+              <span>Software Developed By Murugan Solution</span>
+              ${smileySvg}
+            </div>
           </div>
 
           <script>
@@ -1702,6 +1903,28 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               <Wallet size={17} className="shrink-0" />
               {!isSidebarCollapsed && <span>Shop Expenses</span>}
             </button>
+
+            <button
+              id="staffLoginsTabMenu"
+              data-testid="staffLoginsTabMenu"
+              title="Staff Logins (Chef & Servant)"
+              onClick={() => {
+                setActiveTab('staff_logins');
+                fetchStaffCredentials();
+              }}
+              className={`${
+                isSidebarCollapsed
+                  ? 'w-11 h-11 rounded-full justify-center'
+                  : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
+              } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
+                activeTab === 'staff_logins'
+                  ? 'bg-[#4C1D95] text-white shadow-md shadow-[#4C1D95]/25'
+                  : 'text-[#4B5563] hover:bg-violet-50 hover:text-[#4C1D95]'
+              }`}
+            >
+              <KeyRound size={17} className="shrink-0" />
+              {!isSidebarCollapsed && <span>Staff Logins</span>}
+            </button>
           </div>
         </aside>
 
@@ -1716,13 +1939,360 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               setActiveTab(tabId as any);
               if (tabId === 'reception') fetchReceptionOrders();
               if (tabId === 'foods' || tabId === 'sold_unsold' || tabId === 'inventory') fetchAdminProducts();
+              if (tabId === 'staff_logins') fetchStaffCredentials();
             }}
             receptionOrdersCount={receptionOrders.length}
             allProductsCount={allProducts.length}
           />
 
           {/* Main Grid content */}
-          <main id="mainContent" data-testid="mainContent" className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 w-full p-3 pb-24 md:p-6 lg:p-8 space-y-6">
+          <main id="mainContent" data-testid="mainContent" className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar min-w-0 w-full p-3 pb-24 md:p-6 lg:p-8 space-y-6">
+
+        {/* VIEW: 🔑 INDIVIDUAL ADMIN, CHEF & SERVANT LOGIN CREDENTIALS MANAGEMENT */}
+        {activeTab === 'staff_logins' && (
+          <div id="staffLoginsPage" data-testid="staffLoginsPage" className="space-y-6 animate-fade-in">
+            {/* Header Banner */}
+            <div className="bg-white border border-[#D1D5DB] p-4 sm:p-6 rounded-3xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+              <div className="flex items-start sm:items-center gap-3.5">
+                <div className="p-3 sm:p-3.5 rounded-2xl bg-[#4C1D95] text-white shadow-md shadow-[#4C1D95]/20 shrink-0">
+                  <KeyRound size={24} />
+                </div>
+                <div>
+                  <h2 className="text-base sm:text-xl font-black text-[#111827] flex items-center flex-wrap gap-2">
+                    <span>Admin, Chef & Servant Login Management</span>
+                    <span className="text-[11px] bg-[#4C1D95]/10 text-[#4C1D95] border border-[#4C1D95]/30 px-2.5 py-0.5 rounded-full font-extrabold">
+                      Individual Access Control
+                    </span>
+                  </h2>
+                  <p className="text-xs text-[#4B5563] font-semibold mt-0.5">
+                    Individually change and update the login Username & Password for Admin, Kitchen Chef, and Table Servant.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={fetchStaffCredentials}
+                className="px-3.5 py-2 bg-white hover:bg-violet-50 text-[#4B5563] hover:text-[#4C1D95] border border-[#D1D5DB] rounded-xl text-xs font-extrabold flex items-center gap-1.5 cursor-pointer transition-all shadow-xs shrink-0"
+              >
+                <RefreshCw size={14} className={loadingStaffCreds ? 'animate-spin text-[#4C1D95]' : ''} />
+                <span>Refresh</span>
+              </button>
+            </div>
+
+            {/* Individual Cards (2 Cards Per Row): 1) Admin Login  2) Chef Login  3) Servant Login */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+              {/* CARD 1: ADMIN LOGIN CREDENTIALS */}
+              <div className="bg-white border border-[#D1D5DB] rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col justify-between gap-4 h-full">
+                {/* Card Header */}
+                <div className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] pb-4 min-h-[60px]">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-11 h-11 rounded-2xl bg-violet-100 text-[#4C1D95] flex items-center justify-center shrink-0">
+                      <KeyRound size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-base font-black text-[#111827] leading-tight">Admin Login</h3>
+                      <p className="text-[11px] text-[#4B5563] font-semibold truncate mt-0.5">
+                        Admin Dashboard (<span className="font-mono text-[#4C1D95]">/admin</span>)
+                      </p>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase shrink-0">
+                    Owner
+                  </span>
+                </div>
+
+                {/* Current Active Admin Credentials Summary Box */}
+                <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded-2xl p-3.5 min-h-[84px] flex flex-col justify-between gap-1.5">
+                  <div className="text-[10px] font-extrabold text-[#4B5563] uppercase tracking-wider">
+                    Current Saved Admin Credentials
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div>
+                      <span className="text-[#4B5563] font-semibold">Username: </span>
+                      <span className="font-mono font-black text-[#111827]">{adminSavedUsername}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#4B5563] font-semibold">Password: </span>
+                      <span className="font-mono font-black text-[#4C1D95]">
+                        {showAdminPassword ? adminSavedPassword : '••••••••'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#4B5563] font-medium">
+                    {adminUpdatedAt
+                      ? `Last updated: ${new Date(adminUpdatedAt).toLocaleString()}`
+                      : 'Status: Active login credentials'}
+                  </div>
+                </div>
+
+                {/* Admin Update Form */}
+                <form onSubmit={(e) => handleUpdateStaffCredentials('admin', e)} className="flex flex-col flex-1 justify-between gap-4">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
+                        Admin Username *
+                      </label>
+                      <input
+                        id="adminUsernameInput"
+                        data-testid="adminUsernameInput"
+                        type="text"
+                        required
+                        value={adminUsernameInput}
+                        onChange={(e) => setAdminUsernameInput(e.target.value)}
+                        placeholder="Enter Admin Username (e.g. admin)"
+                        className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl px-4 py-3 text-sm font-bold text-[#111827] outline-none transition-all"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
+                        Admin Password *
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="adminPasswordInput"
+                          data-testid="adminPasswordInput"
+                          type={showAdminPassword ? 'text' : 'password'}
+                          required
+                          value={adminPasswordInput}
+                          onChange={(e) => setAdminPasswordInput(e.target.value)}
+                          placeholder="Enter Admin Password"
+                          className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl pl-4 pr-11 py-3 text-sm font-mono font-bold text-[#111827] outline-none transition-all"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowAdminPassword(!showAdminPassword)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#4B5563] hover:text-[#4C1D95] cursor-pointer"
+                          title={showAdminPassword ? 'Hide Password' : 'Show Password'}
+                        >
+                          {showAdminPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    id="saveAdminCredentialsBtn"
+                    data-testid="saveAdminCredentialsBtn"
+                    type="submit"
+                    disabled={savingAdminCreds}
+                    className="w-full py-3.5 px-4 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-md shadow-[#4C1D95]/20 cursor-pointer active:scale-[0.98]"
+                  >
+                    <CheckCircle size={16} className="shrink-0" />
+                    <span>{savingAdminCreds ? 'Updating Admin Login...' : 'Update Admin Username & Password'}</span>
+                  </button>
+                </form>
+              </div>
+
+              {/* CARD 2: CHEF LOGIN CREDENTIALS */}
+              <div className="bg-white border border-[#D1D5DB] rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col justify-between gap-4 h-full">
+                {/* Card Header */}
+                <div className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] pb-4 min-h-[60px]">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-11 h-11 rounded-2xl bg-violet-100 text-[#4C1D95] flex items-center justify-center shrink-0">
+                      <ChefHat size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-base font-black text-[#111827] leading-tight">Chef Login</h3>
+                      <p className="text-[11px] text-[#4B5563] font-semibold truncate mt-0.5">
+                        Kitchen Display System (<span className="font-mono text-[#4C1D95]">/chef</span>)
+                      </p>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase shrink-0">
+                    Active
+                  </span>
+                </div>
+
+                {/* Current Active Chef Credentials Summary Box */}
+                <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded-2xl p-3.5 min-h-[84px] flex flex-col justify-between gap-1.5">
+                  <div className="text-[10px] font-extrabold text-[#4B5563] uppercase tracking-wider">
+                    Current Saved Chef Credentials
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div>
+                      <span className="text-[#4B5563] font-semibold">Username: </span>
+                      <span className="font-mono font-black text-[#111827]">{chefSavedUsername}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#4B5563] font-semibold">Password: </span>
+                      <span className="font-mono font-black text-[#4C1D95]">
+                        {showChefPassword ? chefSavedPassword : '••••••••'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#4B5563] font-medium">
+                    {chefUpdatedAt
+                      ? `Last updated: ${new Date(chefUpdatedAt).toLocaleString()}`
+                      : 'Status: Active login credentials'}
+                  </div>
+                </div>
+
+                {/* Chef Update Form */}
+                <form onSubmit={(e) => handleUpdateStaffCredentials('chef', e)} className="flex flex-col flex-1 justify-between gap-4">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
+                        Chef Username *
+                      </label>
+                      <input
+                        id="chefUsernameInput"
+                        data-testid="chefUsernameInput"
+                        type="text"
+                        required
+                        value={chefUsernameInput}
+                        onChange={(e) => setChefUsernameInput(e.target.value)}
+                        placeholder="Enter Chef Username (e.g. chef)"
+                        className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl px-4 py-3 text-sm font-bold text-[#111827] outline-none transition-all"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
+                        Chef Password *
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="chefPasswordInput"
+                          data-testid="chefPasswordInput"
+                          type={showChefPassword ? 'text' : 'password'}
+                          required
+                          value={chefPasswordInput}
+                          onChange={(e) => setChefPasswordInput(e.target.value)}
+                          placeholder="Enter Chef Password"
+                          className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl pl-4 pr-11 py-3 text-sm font-mono font-bold text-[#111827] outline-none transition-all"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowChefPassword(!showChefPassword)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#4B5563] hover:text-[#4C1D95] cursor-pointer"
+                          title={showChefPassword ? 'Hide Password' : 'Show Password'}
+                        >
+                          {showChefPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    id="saveChefCredentialsBtn"
+                    data-testid="saveChefCredentialsBtn"
+                    type="submit"
+                    disabled={savingChefCreds}
+                    className="w-full py-3.5 px-4 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-md shadow-[#4C1D95]/20 cursor-pointer active:scale-[0.98]"
+                  >
+                    <CheckCircle size={16} className="shrink-0" />
+                    <span>{savingChefCreds ? 'Updating Chef Login...' : 'Update Chef Username & Password'}</span>
+                  </button>
+                </form>
+              </div>
+
+              {/* CARD 3: SERVANT / WAITER LOGIN CREDENTIALS */}
+              <div className="bg-white border border-[#D1D5DB] rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col justify-between gap-4 h-full">
+                {/* Card Header */}
+                <div className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] pb-4 min-h-[60px]">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-11 h-11 rounded-2xl bg-violet-100 text-[#4C1D95] flex items-center justify-center shrink-0">
+                      <UserCheck size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-base font-black text-[#111827] leading-tight">Servant Login</h3>
+                      <p className="text-[11px] text-[#4B5563] font-semibold truncate mt-0.5">
+                        Table Order Taking (<span className="font-mono text-[#4C1D95]">/customer</span>)
+                      </p>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase shrink-0">
+                    Active
+                  </span>
+                </div>
+
+                {/* Current Active Servant Credentials Summary Box */}
+                <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded-2xl p-3.5 min-h-[84px] flex flex-col justify-between gap-1.5">
+                  <div className="text-[10px] font-extrabold text-[#4B5563] uppercase tracking-wider">
+                    Current Saved Servant Credentials
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div>
+                      <span className="text-[#4B5563] font-semibold">Username: </span>
+                      <span className="font-mono font-black text-[#111827]">{servantSavedUsername}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#4B5563] font-semibold">Password: </span>
+                      <span className="font-mono font-black text-[#4C1D95]">
+                        {showServantPassword ? servantSavedPassword : '••••••••'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-[#4B5563] font-medium">
+                    {servantUpdatedAt
+                      ? `Last updated: ${new Date(servantUpdatedAt).toLocaleString()}`
+                      : 'Status: Active login credentials'}
+                  </div>
+                </div>
+
+                {/* Servant Update Form */}
+                <form onSubmit={(e) => handleUpdateStaffCredentials('servant', e)} className="flex flex-col flex-1 justify-between gap-4">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
+                        Servant Username *
+                      </label>
+                      <input
+                        id="servantUsernameInput"
+                        data-testid="servantUsernameInput"
+                        type="text"
+                        required
+                        value={servantUsernameInput}
+                        onChange={(e) => setServantUsernameInput(e.target.value)}
+                        placeholder="Enter Servant Username (e.g. waiter / servant)"
+                        className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl px-4 py-3 text-sm font-bold text-[#111827] outline-none transition-all"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
+                        Servant Password *
+                      </label>
+                      <div className="relative">
+                        <input
+                          id="servantPasswordInput"
+                          data-testid="servantPasswordInput"
+                          type={showServantPassword ? 'text' : 'password'}
+                          required
+                          value={servantPasswordInput}
+                          onChange={(e) => setServantPasswordInput(e.target.value)}
+                          placeholder="Enter Servant Password"
+                          className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl pl-4 pr-11 py-3 text-sm font-mono font-bold text-[#111827] outline-none transition-all"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowServantPassword(!showServantPassword)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#4B5563] hover:text-[#4C1D95] cursor-pointer"
+                          title={showServantPassword ? 'Hide Password' : 'Show Password'}
+                        >
+                          {showServantPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    id="saveServantCredentialsBtn"
+                    data-testid="saveServantCredentialsBtn"
+                    type="submit"
+                    disabled={savingServantCreds}
+                    className="w-full py-3.5 px-4 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-md shadow-[#4C1D95]/20 cursor-pointer active:scale-[0.98]"
+                  >
+                    <CheckCircle size={16} className="shrink-0" />
+                    <span>{savingServantCreds ? 'Updating Servant Login...' : 'Update Servant Username & Password'}</span>
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* VIEW: 💰 FULL ACCOUNTS & FINANCE STATEMENT */}
         {activeTab === 'accounts' && (
@@ -2637,15 +3207,6 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                                   <Printer size={12} />
                                   <span>Print</span>
                                 </button>
-                                
-                                <button
-                                  id={`viewBillBtn-${order._id}`}
-                                  data-testid={`viewBillBtn-${order._id}`}
-                                  onClick={() => setSelectedReceiptOrder(order)}
-                                  className="px-2.5 py-1 rounded-xl bg-[#FFFFFF] hover:bg-white text-[#111827] border border-[#D1D5DB] font-bold text-[11px] transition-all cursor-pointer shadow-xs quick-touch"
-                                >
-                                  View
-                                </button>
 
                                 <button
                                   id={`deleteHistoryOrderBtn-${order._id}`}
@@ -2760,8 +3321,8 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   <span className="text-xs font-extrabold uppercase tracking-wider">Gross Revenue</span>
                   <div className="p-2 rounded-xl bg-[#4C1D95]/10 text-[#4C1D95]"><TrendingUp size={16} /></div>
                 </div>
-                <div className="text-2xl font-black text-[#4C1D95] font-mono">₹{displayData.grossRevenue?.toFixed(2)}</div>
-                <p className="text-[10px] text-emerald-600 font-bold">+14% from previous period</p>
+                <div className="text-2xl font-black text-[#4C1D95] font-mono">₹{(displayData.grossRevenue || 0).toFixed(2)}</div>
+                <p className="text-[10px] text-emerald-600 font-bold">Total revenue for selected period</p>
               </div>
 
               <div className="bg-white border border-[#D1D5DB] p-5 rounded-3xl shadow-sm space-y-2">
@@ -2805,6 +3366,14 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                     const categories = (displayData?.categoryBreakdown && displayData.categoryBreakdown.length > 0)
                       ? displayData.categoryBreakdown
                       : defaultDashboardData.categoryBreakdown;
+
+                    if (categories.length === 0) {
+                      return (
+                        <div className="py-8 text-center text-xs font-semibold text-[#4B5563]">
+                          No category sales recorded for the selected period.
+                        </div>
+                      );
+                    }
 
                     return categories.map((cat: any, idx: number) => (
                       <div key={idx} className="space-y-1">
@@ -4287,8 +4856,9 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
             Coupon: <b>CAKE20</b> (20% OFF Next Visit)
           </div>
 
-          <div style={{ textAlign: 'center', fontSize: '10px', fontWeight: 700, color: '#4C1D95' }}>
-            ❤️ Thank you for dining at CakeFlow AI!
+          <div style={{ textAlign: 'center', fontSize: '10.5px', fontWeight: 800, color: '#000' }}>
+            <div>Thank you! Visit again!</div>
+            <div style={{ fontSize: '9.5px', fontWeight: 700, marginTop: '3px' }}>😄 Software Developed By Murugan Solution 😄</div>
           </div>
         </div>
       )}

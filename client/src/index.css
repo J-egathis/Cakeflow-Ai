@@ -57,57 +57,20 @@
   color: #D1D5DB;
 }
 
-/* Light Theme Scrollbars (#4C1D95 Primary & #D1D5DB Secondary) */
+/* Hide visual scrollbar bars while keeping smooth scroll behavior */
+*::-webkit-scrollbar,
 html::-webkit-scrollbar,
 body::-webkit-scrollbar,
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-html::-webkit-scrollbar-track,
-body::-webkit-scrollbar-track,
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: #F3F4F6;
-  border-radius: 9999px;
-}
-
-html::-webkit-scrollbar-thumb,
-body::-webkit-scrollbar-thumb,
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, #4C1D95 0%, #5B21B6 100%);
-  border-radius: 9999px;
-  box-shadow: 0 0 6px rgba(76, 29, 149, 0.2);
-}
-
-html::-webkit-scrollbar-thumb:hover,
-body::-webkit-scrollbar-thumb:hover,
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #5B21B6;
-}
-
-/* Firefox scrollbar support */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #4C1D95 #F3F4F6;
-}
-
+.custom-scrollbar::-webkit-scrollbar,
 .scrollbar-thin::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  display: none;
+  width: 0px;
+  height: 0px;
 }
 
-.scrollbar-thin::-webkit-scrollbar-track {
-  background: #F3F4F6;
-}
-
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #4C1D95;
-  border-radius: 9999px;
-}
-
-.scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: #5B21B6;
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 /* Light Glass Panel */

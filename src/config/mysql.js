@@ -532,6 +532,15 @@ OrderItem.belongsTo(Product, { foreignKey: 'productId', as: 'product' });
 });
 
 // Function to initialize MySQL DB
+// Invalidate the fast response cache on ANY write so cached lists are never stale
+const { bumpDataVersion } = require('../utils/responseCache');
+[Product, SmartTable, Order, OrderItem, Inventory, Expense].forEach(model => {
+  ['afterCreate', 'afterUpdate', 'afterSave', 'afterDestroy', 'afterUpsert',
+   'afterBulkCreate', 'afterBulkUpdate', 'afterBulkDestroy'].forEach(hookName => {
+    model.addHook(hookName, () => bumpDataVersion());
+  });
+});
+
 const connectMySQL = async () => {
   try {
     console.log(`Connecting to MySQL Server at ${host}:${port}...`);
@@ -591,9 +600,25 @@ const connectMySQL = async () => {
       }
     }
 
-    try {
-      await sequelize.query("UPDATE Orders SET gstRate = 12, totalAmount = 291.20 WHERE id = 90 AND gstRate IS NULL;");
-    } catch (e) {}
+    // Performance indexes (safe to re-run; duplicates are ignored) so order/history lookups stay fast as data grows
+    const indexStatements = [
+      "CREATE INDEX idx_orders_createdAt ON Orders (createdAt);",
+      "CREATE INDEX idx_orders_status ON Orders (status);",
+      "CREATE INDEX idx_orders_payment ON Orders (paymentStatus);",
+      "CREATE INDEX idx_orders_table ON Orders (tableNumber, paymentStatus, mealType);",
+      "CREATE INDEX idx_orderitems_orderId ON OrderItems (orderId);",
+      "CREATE INDEX idx_orderitems_productId ON OrderItems (productId);",
+      "CREATE INDEX idx_expenses_date ON Expenses (expenseDate);"
+    ];
+    for (const sql of indexStatements) {
+      try {
+        await sequelize.query(sql);
+      } catch (e) {
+        if (!/Duplicate key name|already exists/i.test(e.message)) {
+          console.error("Index migration warning:", e.message);
+        }
+      }
+    }
 
     console.log(`✅ MySQL Tables Synced Successfully!`);
 

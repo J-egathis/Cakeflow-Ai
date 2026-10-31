@@ -22,10 +22,12 @@ export interface Product {
 export interface OrderItem {
   _id: string;
   product: Product;
+  name?: string;
+  price?: number;
   quantity: number;
   instructions: string;
-  category: 'Cake' | 'Snack' | 'Drink';
-  status: 'pending' | 'accepted' | 'preparing' | 'decorating' | 'quality_check' | 'ready' | 'delivered';
+  category: 'Cake' | 'Snack' | 'Drink' | string;
+  status: 'pending' | 'accepted' | 'preparing' | 'decorating' | 'quality_check' | 'ready' | 'delivered' | 'cancelled';
 }
 
 export interface Order {

@@ -24,12 +24,19 @@ interface CartItem {
 
 export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQrMode = false }) => {
  const [searchParams, setSearchParams] = useSearchParams();
- const tableNum = user.tableNumber || parseInt(user.id.replace(/\D/g, '')) || 1;
+ const tableNum = user.tableNumber || (String(user.id || '').includes('table_') ? parseInt(String(user.id).replace(/\D/g, '')) : 1) || 1;
  const [currentTable, setCurrentTable] = useState<number>(() => {
+ if (isQrMode) return tableNum;
  const saved = localStorage.getItem('customer_currentTable');
  return saved ? parseInt(saved) : tableNum;
  });
- useEffect(() => { localStorage.setItem('customer_currentTable', currentTable.toString()); }, [currentTable]);
+ useEffect(() => {
+ if (isQrMode && currentTable !== tableNum) {
+ setCurrentTable(tableNum);
+ return;
+ }
+ localStorage.setItem('customer_currentTable', currentTable.toString());
+ }, [currentTable, isQrMode, tableNum]);
  
  // Sync per-table states when currentTable changes
  useEffect(() => {
@@ -134,6 +141,7 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  });
  useEffect(() => { localStorage.setItem(`customer_cart_${currentTable}`, JSON.stringify(cart)); }, [cart, currentTable]);
  const [showCart, setShowCart] = useState(false);
+ const [isPlacingOrder, setIsPlacingOrder] = useState(false);
  const [specialInstructions, setSpecialInstructions] = useState<{[key: string]: string}>({});
 
  const [activeOrder, setActiveOrder] = useState<Order | null>(null);
@@ -231,13 +239,12 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
 
  // Removed handleCategoriesUpdate as it's computed now
 
- socket.on('order_updated', handleOrderChange);
- socket.on('table_status_updated', () => {
+ const handleTableStatusUpdated = () => {
  fetchActiveOrder();
  fetchAllActiveOrders();
- });
- socket.on('product:updated', handleProductChange);
- socket.on('category:updated', () => {
+ };
+
+ const handleCategoryUpdated = () => {
  fetchProducts();
  import('../services/api').then(m => {
  m.categoryApi.getMetas().then((data: any) => { 
@@ -257,7 +264,12 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  }
  }).catch(() => {});
  });
- });
+ };
+
+ socket.on('order_updated', handleOrderChange);
+ socket.on('table_status_updated', handleTableStatusUpdated);
+ socket.on('product:updated', handleProductChange);
+ socket.on('category:updated', handleCategoryUpdated);
  socket.on('product:created', handleProductChange);
  socket.on('product:deleted', handleProductChange);
  socket.on('gst_rate_updated', handleGstUpdate);
@@ -265,6 +277,7 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
 
  // Fast 3-second polling fallback for active order and product menu updates
  const intervalId = setInterval(() => {
+ if (typeof document !== 'undefined' && document.hidden) return;
  fetchActiveOrder();
  fetchProducts();
  }, 3000);
@@ -273,8 +286,9 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  clearInterval(intervalId);
  socket.emit('leave_room', `table_${currentTable}`);
  socket.off('order_updated', handleOrderChange);
- socket.off('table_status_updated', fetchActiveOrder);
+ socket.off('table_status_updated', handleTableStatusUpdated);
  socket.off('product:updated', handleProductChange);
+ socket.off('category:updated', handleCategoryUpdated);
  socket.off('product:created', handleProductChange);
  socket.off('product:deleted', handleProductChange);
  socket.off('gst_rate_updated', handleGstUpdate);
@@ -286,6 +300,14 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  const data = await productApi.getAll();
  const cleanData = Array.isArray(data) ? data.filter((p: any) => p.category !== 'Uncategorized') : [];
  setProducts(cleanData);
+ // Automatically remove any cart items that have been marked out-of-stock or hidden in the kitchen
+ if (cleanData.length > 0) {
+ const availableMap = new Map(cleanData.map((p: Product) => [String(p._id), p]));
+ setCart(prev => prev.filter(item => {
+ const liveProd = availableMap.get(String(item.product._id));
+ return liveProd ? (liveProd.inStock !== false && !liveProd.isHidden) : true;
+ }));
+ }
  } catch (err) {
  console.error('Failed to load menu:', err);
  }
@@ -383,6 +405,7 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
 
  // Cart operations
  const addToCart = (product: Product) => {
+ if (product.inStock === false || product.isHidden) return;
  setCart(prev => {
  const existing = prev.find(item => item.product._id === product._id && item.memberId === activeMember);
  if (existing) {
@@ -425,7 +448,17 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  };
 
  const handlePlaceOrder = async () => {
- if (cart.length === 0) return;
+ if (cart.length === 0 || isPlacingOrder) return;
+ const outOfStockItem = cart.find(item => {
+ const live = products.find(p => String(p._id) === String(item.product._id));
+ return (live && live.inStock === false) || item.product.inStock === false;
+ });
+ if (outOfStockItem) {
+ alert(`"${outOfStockItem.product.name}" is currently out of stock and has been removed from your cart.`);
+ setCart(prev => prev.filter(i => String(i.product._id) !== String(outOfStockItem.product._id)));
+ return;
+ }
+ setIsPlacingOrder(true);
  try {
  const orderItems = cart.map(item => ({
  productId: item.product._id,
@@ -453,11 +486,14 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  } catch (error: any) {
  console.error('Failed to place order:', error);
  alert(error.message || 'Failed to place order. Please try again.');
+ } finally {
+ setIsPlacingOrder(false);
  }
  };
 
- const isItemInPreparationOrReady = (_itemStatus?: string) => {
- return false;
+ const isItemInPreparationOrReady = (itemStatus?: string) => {
+ if (!itemStatus) return false;
+ return ['preparing', 'decorating', 'quality_check', 'ready', 'served', 'delivered'].includes(itemStatus.toLowerCase());
  };
 
  const handleRemoveOrder = async (orderId: string) => {
@@ -639,6 +675,32 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
 
  const currentPercent = getTrackerProgress();
 
+ // Auto-reconstruct members from activeOrder (so they persist across device/cache resets)
+ // IMPORTANT: Must remain above any early return to follow React's Rules of Hooks!
+ useEffect(() => {
+ if (activeOrder && activeOrder.items && activeOrder.status !== 'cancelled') {
+ const orderedMemberIds = [...new Set(activeOrder.items.map((i: any) => i.memberId).filter(Boolean))];
+ 
+ setTableMembers(prev => {
+ const newMembers = [...prev];
+ let changed = false;
+ 
+ (orderedMemberIds as string[]).forEach((id: string) => {
+ if (!newMembers.find(m => m.id === id)) {
+ newMembers.push({ id, name: `Member ${id.replace('M', '')}` });
+ changed = true;
+ }
+ });
+ 
+ if (changed) {
+ newMembers.sort((a, b) => parseInt(a.id.replace('M','')) - parseInt(b.id.replace('M','')));
+ return newMembers;
+ }
+ return prev;
+ });
+ }
+ }, [activeOrder]);
+
  // QR Scan Welcome Screen
  if (isQrMode && qrScanConfirmed) {
  return (
@@ -685,32 +747,6 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  </div>
  );
  }
-
- 
- // Auto-reconstruct members from activeOrder (so they persist across device/cache resets)
- useEffect(() => {
- if (activeOrder && activeOrder.items && activeOrder.status !== 'cancelled') {
- const orderedMemberIds = [...new Set(activeOrder.items.map((i: any) => i.memberId).filter(Boolean))];
- 
- setTableMembers(prev => {
- const newMembers = [...prev];
- let changed = false;
- 
- (orderedMemberIds as string[]).forEach((id: string) => {
- if (!newMembers.find(m => m.id === id)) {
- newMembers.push({ id, name: `Member ${id.replace('M', '')}` });
- changed = true;
- }
- });
- 
- if (changed) {
- newMembers.sort((a, b) => parseInt(a.id.replace('M','')) - parseInt(b.id.replace('M','')));
- return newMembers;
- }
- return prev;
- });
- }
- }, [activeOrder]);
 
 
  const renderBottomNav = () => (
@@ -1677,7 +1713,11 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
  <span className="text-[9px] text-[#9CA3AF] line-through ml-1 font-mono hidden xs:inline">₹{p.price}</span>
  )}
  </div>
- {qty > 0 ? (
+ {p.inStock === false ? (
+ <span className="px-2.5 py-1.5 rounded-xl text-[10px] font-black bg-rose-50 text-rose-600 border border-rose-200 shrink-0">
+ Out of Stock
+ </span>
+ ) : qty > 0 ? (
  <div
  onClick={(e) => e.stopPropagation()}
  className="flex items-center gap-1.5 bg-[#F3F4F6] border border-[#4C1D95]/30 rounded-lg p-1"
@@ -1821,10 +1861,11 @@ export const CustomerView: React.FC<CustomerViewProps> = ({ user, onLogout, isQr
 
  <button
  onClick={handlePlaceOrder}
- className="w-full py-3.5 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-black rounded-2xl text-xs flex items-center justify-center gap-2 shadow-xl shadow-[#4C1D95]/30 cursor-pointer transition-all active:scale-[0.98]"
+ disabled={isPlacingOrder}
+ className="w-full py-3.5 bg-[#4C1D95] hover:bg-[#5B21B6] disabled:opacity-60 text-white font-black rounded-2xl text-xs flex items-center justify-center gap-2 shadow-xl shadow-[#4C1D95]/30 cursor-pointer transition-all active:scale-[0.98]"
  >
  <Send size={15} />
- <span>Place Order (₹{grandTotal.toFixed(2)})</span>
+ <span>{isPlacingOrder ? 'Placing Order...' : `Place Order (₹${grandTotal.toFixed(2)})`}</span>
  </button>
  </div>
  );

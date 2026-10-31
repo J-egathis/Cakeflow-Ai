@@ -14,10 +14,10 @@ interface ChefViewProps {
 }
 
 export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const activeTab = searchParams.get('tab') || localStorage.getItem('chef_active_tab') || 'All';
+  const [, setSearchParams] = useSearchParams();
+  // Always default to 'All' so stale localStorage tab values never hide kitchen orders
+  const activeTab = 'All';
   const setActiveTab = (tab: string) => {
-    localStorage.setItem('chef_active_tab', tab);
     setSearchParams(prev => { prev.set('tab', tab); return prev; }, { replace: true });
   };
   const tabs = ['All', 'Juice', 'Snacks', 'Cakes', 'Chats'];
@@ -124,6 +124,9 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
     { id: 'ready', name: 'Ready' }
   ];
 
+  // Last server payload reference: unchanged data => skip re-render (no lag while polling)
+  const lastChefOrdersRef = useRef<any>(null);
+
   // Fetch orders (showLoading=false for background silent polls)
   const fetchChefOrders = async (showLoading = true) => {
     // Skip silent background poll if an optimistic status update is currently in-flight
@@ -133,7 +136,9 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       const data = await orderApi.getAll();
       // Do not overwrite optimistic state if another update started while getAll() was in flight
       if (!showLoading && inFlightUpdatesRef.current > 0) return;
-      const activeOrders = data.filter((order: Order) =>
+      if (!showLoading && data === lastChefOrdersRef.current) return;
+      lastChefOrdersRef.current = data;
+      const activeOrders = (Array.isArray(data) ? data : []).filter((order: Order) =>
         order.status !== 'served' && order.status !== 'cancelled'
       );
       setOrders(activeOrders);
@@ -194,26 +199,35 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       }
     };
 
+    const handleTableStatusUpdated = () => fetchChefOrders(false);
+
     socket.on('new_order', handleNewOrder);
     socket.on('order_updated', handleOrderUpdated);
-    socket.on('table_status_updated', () => fetchChefOrders(false));
+    socket.on('table_status_updated', handleTableStatusUpdated);
     socket.on('product:updated', handleProductChange);
     socket.on('product:created', handleProductChange);
     socket.on('product:deleted', handleProductChange);
     socket.on('unsold_reports_updated', handleUnsoldReportsUpdated);
 
-    // Silent background poll every 4s for instant kitchen auto-refresh
+    // Silent background safety-net poll (skipped while the tab is hidden)
     const intervalId = setInterval(() => {
+      if (document.hidden) return;
       fetchChefOrders(false);
     }, 4000);
 
+    const handleVisibility = () => {
+      if (!document.hidden) fetchChefOrders(false);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
       socket.emit('leave_room', 'cake_kitchen');
       socket.emit('leave_room', 'snacks_kitchen');
       socket.off('new_order', handleNewOrder);
-      socket.off('order_updated');
-      socket.off('table_status_updated');
+      socket.off('order_updated', handleOrderUpdated);
+      socket.off('table_status_updated', handleTableStatusUpdated);
       socket.off('product:updated', handleProductChange);
       socket.off('product:created', handleProductChange);
       socket.off('product:deleted', handleProductChange);
@@ -310,8 +324,6 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
       status: nextStatus
     }));
 
-    const previousOrders = orders;
-
     // 1. Instant 0ms Optimistic UI Update: move items & order to the next column immediately
     setOrders(prev =>
       prev.map(o => {
@@ -356,7 +368,7 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
         );
       }
     } catch (err) {
-      setOrders(previousOrders);
+      setOrders(prev => prev.map(o => (o._id === orderId ? order : o)));
       alert('Failed to update status: ' + err);
     } finally {
       inFlightUpdatesRef.current = Math.max(0, inFlightUpdatesRef.current - 1);
@@ -372,25 +384,53 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
   const submitRejection = async () => {
     if (!selectedOrder) return;
     const targetOrder = selectedOrder;
-    const previousOrders = orders;
+    const pendingItems = targetOrder.items.filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, 'pending'));
+    const itemsToReject = pendingItems.length > 0 ? pendingItems : targetOrder.items;
+    const isPartialRejection = itemsToReject.length < targetOrder.items.length;
+    const rejectedItemIds = new Set(itemsToReject.map(i => String(i._id)));
 
-    // Instant 0ms optimistic removal of rejected order & modal close
-    setOrders(prev => prev.filter(o => o._id !== targetOrder._id));
+    // Instant 0ms optimistic update: only remove rejected pending items (or the whole order if all items are pending)
+    if (isPartialRejection) {
+      setOrders(prev =>
+        prev.map(o => {
+          if (o._id !== targetOrder._id) return o;
+          return {
+            ...o,
+            items: o.items.filter(i => !rejectedItemIds.has(String(i._id)))
+          };
+        })
+      );
+    } else {
+      setOrders(prev => prev.filter(o => o._id !== targetOrder._id));
+    }
     setShowRejectModal(false);
     setSelectedOrder(null);
 
     inFlightUpdatesRef.current += 1;
     try {
-      await orderApi.update(targetOrder._id, {
-        status: 'cancelled',
-        rejectionReason: rejectionReason
-      });
+      if (isPartialRejection) {
+        const updatedOrder = await orderApi.update(targetOrder._id, {
+          deleteItemIds: Array.from(rejectedItemIds)
+        });
+        if (updatedOrder && updatedOrder._id) {
+          setOrders(prev =>
+            prev
+              .map(o => (o._id === updatedOrder._id ? updatedOrder : o))
+              .filter(o => o.status !== 'served' && o.status !== 'cancelled')
+          );
+        }
+      } else {
+        await orderApi.update(targetOrder._id, {
+          status: 'cancelled',
+          rejectionReason: rejectionReason
+        });
+      }
 
-      // If rejected due to Out of Stock and auto-mark is enabled, mark unique items out of stock in parallel
+      // If rejected due to Out of Stock and auto-mark is enabled, mark ONLY the rejected items out of stock in parallel
       if (rejectionReason === 'Out of Stock' && autoMarkItemOutOfStock) {
         const uniqueProdIds = Array.from(
           new Set(
-            targetOrder.items
+            itemsToReject
               .map(item => item.product?._id || (item as any).productId)
               .filter(Boolean)
               .map(String)
@@ -407,11 +447,14 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
               }).catch(e => console.error('Failed to auto-mark item out of stock:', e))
             )
           );
-          showChefStockToast(`🚨 Order items marked OUT OF STOCK & live alert sent to Admin!`, 'danger');
+          showChefStockToast(`🚨 Rejected item(s) marked OUT OF STOCK & live alert sent to Admin!`, 'danger');
         }
       }
     } catch (err) {
-      setOrders(previousOrders);
+      setOrders(prev => {
+        const exists = prev.some(o => o._id === targetOrder._id);
+        return exists ? prev.map(o => (o._id === targetOrder._id ? targetOrder : o)) : [targetOrder, ...prev];
+      });
       alert('Failed to reject order: ' + err);
     } finally {
       inFlightUpdatesRef.current = Math.max(0, inFlightUpdatesRef.current - 1);

@@ -6,6 +6,7 @@ const { Order, OrderItem, Product, SmartTable, Inventory, Op } = require('../con
 const auth = require('../middleware/auth');
 const { staffOnly, optionalAuth, isStaff } = require('../middleware/auth');
 const { notifyNewOrder, notifyOrderUpdate, notifyInventoryUpdate, getIo } = require('../sockets');
+const { getCachedJson, sendJsonString } = require('../utils/responseCache');
 
 const SETTINGS_FILE = path.join(__dirname, '../../datas/settings.json');
 const getSystemGstRate = () => {
@@ -286,6 +287,9 @@ router.post('/', async (req, res) => {
       if (!product) {
         return res.status(400).json({ message: `Menu item not found: ${item.name || item.productId || 'unknown'}. Please refresh the menu.` });
       }
+      if (product.inStock === false || product.isHidden === true) {
+        return res.status(400).json({ message: `"${product.name}" is currently out of stock. Please remove it from your cart.` });
+      }
 
       const quantity = Number(item.quantity ?? 1);
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500) {
@@ -420,12 +424,19 @@ router.get('/', optionalAuth, async (req, res) => {
       where.tableNumber = parseInt(tableNumber);
     }
 
-        if (timeframe !== 'all') {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const todayEnd = new Date();
-      todayEnd.setHours(23, 59, 59, 999);
-  
+    if (timeframe !== 'all') {
+      let todayIstStr = '';
+      try {
+        todayIstStr = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Kolkata',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(new Date());
+      } catch (e) {}
+      const todayStart = todayIstStr ? new Date(`${todayIstStr}T00:00:00+05:30`) : new Date(new Date().setHours(0, 0, 0, 0));
+      const todayEnd = todayIstStr ? new Date(`${todayIstStr}T23:59:59.999+05:30`) : new Date(new Date().setHours(23, 59, 59, 999));
+
       where[Op.or] = [
         { createdAt: { [Op.between]: [todayStart, todayEnd] } },
         { status: { [Op.notIn]: ['served', 'cancelled'] } }
@@ -435,23 +446,27 @@ router.get('/', optionalAuth, async (req, res) => {
     let include = [{
       model: OrderItem,
       as: 'items',
-      include: [{ model: Product, as: 'product' }]
+      include: [{ model: Product, as: 'product', attributes: { exclude: ['description', 'ingredients'] } }]
     }];
 
     if (category) {
       include[0].where = { category };
     }
 
-    const orders = await Order.findAll({
-      where,
-      include,
-      order: [['createdAt', 'DESC']]
+    const currentGstRate = getSystemGstRate();
+    const cacheKey = `orders:${isStaff(req) ? 'staff' : 'guest'}:${currentGstRate}:${JSON.stringify(req.query)}`;
+
+    const body = await getCachedJson(cacheKey, 15000, async () => {
+      const orders = await Order.findAll({
+        where,
+        include,
+        order: [['createdAt', 'DESC']]
+      });
+      await Promise.all(orders.map(o => syncUnpaidOrderGst(o, currentGstRate)));
+      return orders;
     });
 
-    const currentGstRate = getSystemGstRate();
-    await Promise.all(orders.map(o => syncUnpaidOrderGst(o, currentGstRate)));
-
-    res.json(orders);
+    sendJsonString(res, body);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -719,13 +734,17 @@ router.put('/:id', optionalAuth, async (req, res) => {
           table.currentBill = 0;
           table.orderProgress = 0;
           table.paymentStatus = 'Pending';
-        } else if (order.status === 'served' || order.paymentStatus === 'paid') {
+        } else if (order.paymentStatus === 'paid' || order.paymentStatus === 'Paid') {
           table.status = 'Available';
           table.currentOrderId = null;
           table.currentOrderNumber = '';
           table.currentBill = 0;
           table.orderProgress = 0;
           table.paymentStatus = 'Paid';
+        } else if (order.status === 'served') {
+          table.status = 'Ready To Serve';
+          table.orderProgress = 95;
+          table.currentBill = order.totalAmount;
         }
         if (paymentStatus) table.paymentStatus = paymentStatus === 'paid' ? 'Paid' : 'Pending';
 
@@ -755,42 +774,63 @@ router.post('/:id/close', staffOnly, async (req, res) => {
       include: [{ model: OrderItem, as: 'items', include: [{ model: Product, as: 'product' }] }]
     });
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status === 'cancelled') {
+      return res.status(400).json({ message: 'Cannot settle a cancelled order' });
+    }
 
-    const requestedGst = req.body.gstRate !== undefined ? parseFloat(req.body.gstRate) : NaN;
-    const lockedGstRate = !isNaN(requestedGst) && requestedGst >= 0
-      ? requestedGst
-      : (order.gstRate !== null && order.gstRate !== undefined ? Number(order.gstRate) : getSystemGstRate());
+    const alreadyPaid = (order.paymentStatus || '').toLowerCase() === 'paid';
+    if (!alreadyPaid) {
+      const requestedGst = req.body.gstRate !== undefined ? parseFloat(req.body.gstRate) : NaN;
+      const lockedGstRate = !isNaN(requestedGst) && requestedGst >= 0
+        ? requestedGst
+        : (order.gstRate !== null && order.gstRate !== undefined ? Number(order.gstRate) : getSystemGstRate());
 
-    const itemsSubtotal = Array.isArray(order.items) && order.items.length > 0
-      ? order.items.reduce((sum, item) => {
-          const price = Number(item.price ?? item.product?.price ?? 0);
-          const qty = Number(item.quantity ?? 1);
-          return sum + price * qty;
-        }, 0)
-      : Number(order.totalAmount || 0);
+      const itemsSubtotal = Array.isArray(order.items) && order.items.length > 0
+        ? order.items.reduce((sum, item) => {
+            if (item.status === 'cancelled') return sum;
+            const price = Number(item.price ?? item.product?.price ?? 0);
+            const qty = Number(item.quantity ?? 1);
+            return sum + price * qty;
+          }, 0)
+        : Number(order.totalAmount || 0);
 
-    order.gstRate = lockedGstRate;
-    order.totalAmount = Math.round((itemsSubtotal + itemsSubtotal * (lockedGstRate / 100)) * 100) / 100;
-    order.paymentStatus = 'paid';
-    order.paymentMethod = req.body.paymentMethod || 'Cash';
-    order.status = 'served';
-    await order.save();
+      order.gstRate = lockedGstRate;
+      order.totalAmount = Math.round((itemsSubtotal + itemsSubtotal * (lockedGstRate / 100)) * 100) / 100;
+      order.paymentStatus = 'paid';
+      order.paymentMethod = req.body.paymentMethod || 'Cash';
+      order.status = 'served';
+      await order.save();
+    } else if (req.body.paymentMethod) {
+      order.paymentMethod = req.body.paymentMethod;
+      await order.save();
+    }
+
     await deductInventoryForOrder(order);
 
-    // Automatically set Table status to Available
+    // Automatically set Table status to Available if no other unpaid active orders remain on this table
     try {
       let table = await SmartTable.findOne({ where: { tableNumber: Number(order.tableNumber) } });
       if (table) {
-        table.status = 'Available';
-        table.currentOrderId = null;
-        table.currentOrderNumber = '';
-        table.currentBill = 0;
-        table.orderProgress = 0;
-        table.paymentStatus = 'Paid';
-        await table.save();
+        const remainingUnpaid = await Order.findAll({
+          where: {
+            tableNumber: Number(order.tableNumber),
+            id: { [Op.ne]: order.id },
+            paymentStatus: 'unpaid',
+            status: { [Op.ne]: 'cancelled' }
+          }
+        });
+        if (remainingUnpaid.length === 0) {
+          table.status = 'Available';
+          table.currentOrderId = null;
+          table.currentOrderNumber = '';
+          table.currentBill = 0;
+          table.orderProgress = 0;
+          table.paymentStatus = 'Paid';
+          await table.save();
 
-        const io = getIo();
-        io.emit('table_status_updated', table);
+          const io = getIo();
+          io.emit('table_status_updated', table);
+        }
       }
     } catch (tblErr) {
       console.error('Failed to set table available on order close:', tblErr.message);
@@ -814,11 +854,61 @@ router.post('/bulk-delete', staffOnly, async (req, res) => {
       return res.status(400).json({ message: 'No order IDs provided for deletion' });
     }
 
+    const ordersToDelete = await Order.findAll({
+      where: { id: { [Op.in]: orderIds } },
+      include: [{ model: OrderItem, as: 'items' }]
+    });
+
+    const unpaidItemsToReverse = [];
+    const affectedTables = new Set();
+    for (const o of ordersToDelete) {
+      affectedTables.add(Number(o.tableNumber));
+      if ((o.paymentStatus || '').toLowerCase() !== 'paid' && Array.isArray(o.items)) {
+        unpaidItemsToReverse.push(...o.items);
+      }
+    }
+
+    if (unpaidItemsToReverse.length > 0) {
+      await reverseInventoryForItems(unpaidItemsToReverse);
+    }
+
+    await OrderItem.destroy({
+      where: { orderId: { [Op.in]: orderIds } }
+    });
+
     const count = await Order.destroy({
       where: {
         id: { [Op.in]: orderIds }
       }
     });
+
+    // Reset any affected tables that have no remaining active orders
+    for (const tblNum of affectedTables) {
+      try {
+        const table = await SmartTable.findOne({ where: { tableNumber: tblNum } });
+        if (table) {
+          const remainingActive = await Order.findAll({
+            where: {
+              tableNumber: tblNum,
+              paymentStatus: 'unpaid',
+              status: { [Op.ne]: 'cancelled' }
+            }
+          });
+          if (remainingActive.length === 0) {
+            table.status = 'Available';
+            table.currentOrderId = null;
+            table.currentOrderNumber = '';
+            table.currentBill = 0;
+            table.orderProgress = 0;
+            table.paymentStatus = 'Pending';
+            await table.save();
+
+            const io = getIo();
+            if (io) io.emit('table_status_updated', table);
+          }
+        }
+      } catch (e) {}
+    }
 
     res.json({ message: `${count} order(s) deleted successfully`, deletedCount: count });
   } catch (error) {

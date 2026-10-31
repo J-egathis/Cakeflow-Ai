@@ -235,8 +235,7 @@ export const SmartReceiptModal: React.FC<SmartReceiptModalProps> = ({
                 <h4 className="font-extrabold text-sm text-[#4C1D95]">VPN Restaurant</h4>
               </div>
               <p className="text-[10px] text-[#4B5563]">Thiruvarur - Nagapattinam Rd, Melakottaivasal</p>
-              <p className="text-[10px] text-[#4B5563]">Nagapattinam, Tamil Nadu 611106</p>
-              <p className="text-[9px] text-[#4B5563]">GSTIN: 33AAAAA0000A1Z5</p>
+              <p className="text-[10px] text-[#4B5563]">Nagapattinam, Tamil Nadu 611001</p>
               <span className="inline-block mt-1 text-[10px] font-black text-[#4C1D95] bg-[#4C1D95]/10 px-2 py-0.5 rounded-full uppercase">
                 Tax Invoice Receipt
               </span>
@@ -247,40 +246,64 @@ export const SmartReceiptModal: React.FC<SmartReceiptModalProps> = ({
               <div>
                 <p>Table: <strong className="text-[#111827]">Table {order.tableNumber}</strong></p>
                 <p>Guest: <strong className="text-[#111827]">{order.customerName || 'Table Guest'}</strong></p>
-                <p>Served By: <strong className="text-[#111827]">Rahul (EMP204)</strong></p>
               </div>
               <div className="text-right">
                 <p>Order #: <strong className="text-[#111827]">#{order._id.slice(-6)}</strong></p>
+                <p>Date: <strong className="text-[#111827]">{new Date(order.createdAt).toLocaleDateString()}</strong></p>
                 <p>Time: <strong className="text-[#111827]">{new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong></p>
-                <p>Chef: <strong className="text-[#111827]">Head Chef</strong></p>
               </div>
             </div>
 
             {/* Order Items Breakdown */}
             <div className="space-y-1.5 border-b border-dashed border-[#D1D5DB] pb-2 text-[11px]">
-              <div className="flex justify-between text-[10px] font-black text-[#4B5563] border-b border-[#F3F4F6] pb-1 uppercase">
-                <span>Item</span>
-                <span>Qty x Rate</span>
-                <span>Amt</span>
+              <div className="grid grid-cols-[28px_1fr_44px_64px] items-center text-[10px] font-black text-[#4B5563] border-b border-[#F3F4F6] pb-1 uppercase">
+                <span>S.No</span>
+                <span>Item Desc</span>
+                <span className="text-center">Qty</span>
+                <span className="text-right">Amount</span>
               </div>
 
               <div className="space-y-1">
-                {order.items?.map((item: any, idx: number) => {
-                  const pName = item.product?.name || item.name || 'Food Item';
-                  const price = item.price || item.product?.price || 0;
-                  return (
-                    <div key={idx} className="space-y-0.5">
-                      <div className="flex justify-between font-bold text-[#111827]">
-                        <span className="truncate pr-2">{pName}</span>
-                        <span className="text-[#4B5563] font-mono shrink-0 px-2">{item.quantity} x ₹{price}</span>
-                        <span className="font-mono text-[#4C1D95] font-black shrink-0">₹{price * item.quantity}</span>
+                {(() => {
+                  const map = new Map<string, { name: string; price: number; quantity: number; instructions: string[] }>();
+                  for (const item of (order.items || [])) {
+                    if ((item as any).status === 'cancelled') continue;
+                    const pName = (item.product?.name || item.name || 'Food Item').trim();
+                    const price = Number(item.price ?? item.product?.price ?? 0);
+                    const qty = Number(item.quantity ?? 1);
+                    const key = `${pName.toLowerCase()}::${price}`;
+                    const existing = map.get(key);
+                    if (existing) {
+                      existing.quantity += qty;
+                      if (item.instructions && !existing.instructions.includes(item.instructions)) {
+                        existing.instructions.push(item.instructions);
+                      }
+                    } else {
+                      map.set(key, {
+                        name: pName,
+                        price,
+                        quantity: qty,
+                        instructions: item.instructions ? [item.instructions] : []
+                      });
+                    }
+                  }
+                  return Array.from(map.values()).map((item, idx) => {
+                    const noteText = item.instructions.join(', ');
+                    return (
+                      <div key={idx} className="space-y-0.5">
+                        <div className="grid grid-cols-[28px_1fr_44px_64px] items-start font-medium text-[#111827]">
+                          <span className="text-[#4B5563] font-mono">{idx + 1}.</span>
+                          <span className="truncate pr-2">{item.name}</span>
+                          <span className="text-center font-mono font-semibold text-[#111827]">{item.quantity}</span>
+                          <span className="text-right font-mono text-[#4C1D95] font-semibold">₹{item.price * item.quantity}</span>
+                        </div>
+                        {noteText && (
+                          <div className="text-[9px] text-[#4C1D95] italic pl-7">📌 Note: "{noteText}"</div>
+                        )}
                       </div>
-                      {item.instructions && (
-                        <div className="text-[9px] text-[#4C1D95] italic">📌 Note: "{item.instructions}"</div>
-                      )}
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             </div>
 
@@ -315,6 +338,12 @@ export const SmartReceiptModal: React.FC<SmartReceiptModalProps> = ({
               {qrCodeDataUrl && (
                 <img src={qrCodeDataUrl} alt="Receipt QR" className="w-16 h-16 rounded-xl border border-[#D1D5DB] bg-white p-1 shrink-0 shadow-xs" />
               )}
+            </div>
+
+            {/* Receipt Footer */}
+            <div className="pt-2.5 border-t border-dashed border-[#D1D5DB] text-center space-y-0.5">
+              <p className="text-xs font-extrabold text-[#111827]">Thank you! Visit again!</p>
+              <p className="text-[11px] font-bold text-[#4B5563]">😄 Software Developed By Murugan Solution 😄</p>
             </div>
           </div>
 

@@ -151,9 +151,14 @@ export const TableManagement: React.FC<TableManagementProps> = ({ onSelectTableF
   };
 
   // Silent load for auto-refresh without loading spinner
+  const lastSilentTablesRef = React.useRef<any>(null);
   const fetchTablesSilent = async () => {
+    if (document.hidden) return;
     try {
       const data = await tableApi.getAll();
+      // Same payload as last time (shared reference from api layer) => nothing changed, skip work
+      if (data === lastSilentTablesRef.current) return;
+      lastSilentTablesRef.current = data;
       if (data && Array.isArray(data) && data.length > 0) {
         setTables(data);
         localStorage.setItem('cakeflow_tables_cache', JSON.stringify(data));

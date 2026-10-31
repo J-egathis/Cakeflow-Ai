@@ -44,16 +44,45 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onSelectOrder 
     const sgst = totalGstAmount / 2;
     const grandTotal = subtotal + totalGstAmount;
 
-    const itemsHtml = order.items?.map((item: any) => {
-      const pName = item.product?.name || item.name || 'Food Item';
-      const price = item.price || item.product?.price || 0;
+    const smileySvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: -4px; display: inline-block; flex-shrink: 0;"><circle cx="12" cy="12" r="10.5" stroke="#000" stroke-width="1.8" fill="none"/><circle cx="8.5" cy="8.8" r="1.5" fill="#000" stroke="none"/><circle cx="15.5" cy="8.8" r="1.5" fill="#000" stroke="none"/><path d="M7.5 13.8 C8.8 17.5, 15.2 17.5, 16.5 13.8" stroke="#000" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>`;
+
+    const groupedPrintItems = (() => {
+      const map = new Map<string, { name: string; price: number; quantity: number; instructions: string[] }>();
+      for (const item of (order.items || [])) {
+        if ((item as any).status === 'cancelled') continue;
+        const pName = (item.product?.name || item.name || 'Food Item').trim();
+        const price = Number(item.price ?? item.product?.price ?? 0);
+        const qty = Number(item.quantity ?? 1);
+        const key = `${pName.toLowerCase()}::${price}`;
+        const existing = map.get(key);
+        if (existing) {
+          existing.quantity += qty;
+          if (item.instructions && !existing.instructions.includes(item.instructions)) {
+            existing.instructions.push(item.instructions);
+          }
+        } else {
+          map.set(key, {
+            name: pName,
+            price,
+            quantity: qty,
+            instructions: item.instructions ? [item.instructions] : []
+          });
+        }
+      }
+      return Array.from(map.values());
+    })();
+
+    const itemsHtml = groupedPrintItems.map((item, idx) => {
+      const noteText = item.instructions.join(', ');
       return `
-        <div style="margin-bottom: 5px;">
-          <div style="display: flex; justify-content: space-between; font-size: 11px;">
-            <span style="font-weight: 600;">${item.quantity}x ${pName}</span>
-            <span style="font-family: monospace; font-weight: bold;">₹${price * item.quantity}</span>
+        <div style="margin-bottom: 4px;">
+          <div style="display: grid; grid-template-columns: 28px 1fr 36px 56px; align-items: start; font-size: 10px; font-weight: 500; color: #000; -webkit-text-stroke: 0.3px #000; line-height: 1.35;">
+            <span>${idx + 1}.</span>
+            <span style="padding-right: 4px; word-break: break-word;">${item.name}</span>
+            <span style="text-align: center;">${item.quantity}</span>
+            <span style="text-align: right;">₹${item.price * item.quantity}</span>
           </div>
-          ${item.instructions ? `<div style="font-size: 9px; color: #4C1D95; margin-top: 1px;">📌 Note: "${item.instructions}"</div>` : ''}
+          ${noteText ? `<div style="font-size: 9px; color: #000; margin-top: 1px; padding-left: 28px;">Note: "${noteText}"</div>` : ''}
         </div>
       `;
     }).join('') || '';
@@ -121,16 +150,29 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onSelectOrder 
               letter-spacing: 0.5px;
             }
             .meta {
-              font-size: 10px;
+              font-size: 10.5px;
+              font-weight: 700;
+              color: #000;
+              line-height: 1.45;
               margin-bottom: 6px;
               border-bottom: 1px dashed #000;
               padding-bottom: 6px;
-              display: flex;
-              flex-wrap: wrap;
-              gap: 4px 10px;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
             }
-            .meta div { width: 45%; }
             .items { margin-bottom: 6px; border-bottom: 1px dashed #000; padding-bottom: 6px; }
+            .table-head {
+              display: grid;
+              grid-template-columns: 28px 1fr 36px 56px;
+              align-items: center;
+              font-size: 9.5px;
+              font-weight: 900;
+              color: #000;
+              text-transform: uppercase;
+              border-bottom: 1px solid #000;
+              padding-bottom: 3px;
+              margin-bottom: 5px;
+            }
             .totals {
               font-size: 11px;
               margin-bottom: 6px;
@@ -168,7 +210,7 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onSelectOrder 
           <div class="header">
             <h2 style="font-size: 18px; margin-bottom: 2px;">VPN Restaurant</h2>
             <div class="subtitle" style="font-size: 10px;">Thiruvarur - Nagapattinam Rd, Melakottaivasal</div>
-            <div class="subtitle" style="font-size: 10px;">Nagapattinam, Tamil Nadu 611106</div>
+            <div class="subtitle" style="font-size: 10px;">Nagapattinam, Tamil Nadu 611001</div>
             <div class="title-tag" style="margin-top: 6px;">TAX INVOICE - CUSTOMER COPY</div>
           </div>
           
@@ -177,13 +219,23 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onSelectOrder 
           </div>
 
           <div class="meta">
-            <div><b>Order:</b> #${order._id.slice(-6).toUpperCase()}</div>
-            <div><b>Date:</b> ${new Date(order.createdAt).toLocaleDateString()}</div>
-            <div><b>Time:</b> ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-            <div><b>Guest:</b> ${order.customerName}</div>
+            <div>
+              <div>Table: Table ${order.tableNumber}</div>
+              <div>Guest: ${order.customerName || 'Walk-in Guest'}</div>
+            </div>
+            <div style="text-align: right;">
+              <div>Bill #: #${order._id.slice(-6).toUpperCase()}</div>
+              <div>Time: ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
           </div>
 
           <div class="items">
+            <div class="table-head">
+              <span>S.NO</span>
+              <span>ITEM DESC</span>
+              <span style="text-align: center;">QTY</span>
+              <span style="text-align: right;">AMOUNT</span>
+            </div>
             ${itemsHtml}
           </div>
 
@@ -214,9 +266,12 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onSelectOrder 
           ` : ''}
           
           <div class="footer">
-            Thank you for dining with us!<br/>
-            <b>Visit Again!</b><br/>
-            <span style="font-size: 7px; color: #555; display:inline-block; margin-top:4px;">Printed via CakeFlow AI Smart POS</span>
+            <div><b>Thank you! Visit again!</b></div>
+            <div style="font-size: 9.5px; font-weight: 700; margin-top: 4px; color: #000; display: flex; align-items: center; justify-content: center; gap: 4px;">
+              ${smileySvg}
+              <span>Software Developed By Murugan Solution</span>
+              ${smileySvg}
+            </div>
           </div>
         </body>
       </html>
