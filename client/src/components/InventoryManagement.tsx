@@ -1115,26 +1115,13 @@ export const InventoryManagement: React.FC<InventoryManagementProps> = ({ allPro
                     <label className="block text-xs font-extrabold text-[#111827]">
                       Unit
                     </label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowAddUnitInput(prev => !prev)}
-                        className="text-[10px] font-extrabold text-[#4C1D95] hover:underline flex items-center gap-0.5 cursor-pointer"
-                      >
-                        {showAddUnitInput ? 'Cancel' : '+ Add'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingUnitIndex(null);
-                          setEditingUnitText('');
-                          setShowManageUnitsModal(true);
-                        }}
-                        className="text-[10px] font-extrabold text-[#4B5563] hover:text-[#4C1D95] hover:underline flex items-center gap-0.5 cursor-pointer"
-                      >
-                        Edit/Delete
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddUnitInput(prev => !prev)}
+                      className="text-[10px] font-extrabold text-[#4C1D95] hover:underline flex items-center gap-0.5 cursor-pointer"
+                    >
+                      {showAddUnitInput ? 'Cancel' : '+ Add'}
+                    </button>
                   </div>
                   {showAddUnitInput ? (
                     <div className="flex items-center gap-1">
@@ -1167,10 +1154,6 @@ export const InventoryManagement: React.FC<InventoryManagementProps> = ({ allPro
                       onChange={(e) => {
                         if (e.target.value === '__add_new__') {
                           setShowAddUnitInput(true);
-                        } else if (e.target.value === '__manage_units__') {
-                          setEditingUnitIndex(null);
-                          setEditingUnitText('');
-                          setShowManageUnitsModal(true);
                         } else {
                           setUnit(e.target.value);
                         }
@@ -1183,7 +1166,6 @@ export const InventoryManagement: React.FC<InventoryManagementProps> = ({ allPro
                         </option>
                       ))}
                       <option value="__add_new__">➕ Add New Unit...</option>
-                      <option value="__manage_units__">⚙️ Edit / Delete Units...</option>
                     </select>
                   )}
                 </div>

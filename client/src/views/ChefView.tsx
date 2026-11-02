@@ -462,9 +462,10 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
   };
 
   const itemMatchesTab = (item: any, tab: string) => {
+    if (!item) return false;
     if (tab === 'All') return true;
-    const cat = (item.product?.category || item.category || '').toLowerCase();
-    const prodName = (item.product?.name || item.name || '').toLowerCase();
+    const cat = String(item.product?.category || item.category || '').toLowerCase();
+    const prodName = String(item.product?.name || item.name || '').toLowerCase();
     
     if (tab === 'Cakes') return cat.includes('cake') || cat.includes('pastr') || cat.includes('brownie') || cat.includes('cookie') || cat.includes('dessert') || prodName.includes('cake');
     if (tab === 'Snacks') return cat.includes('snack') || cat.includes('veg') || cat.includes('burger') || cat.includes('puff') || prodName.includes('snack');
@@ -475,8 +476,10 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
   };
 
   const getOrdersInColumn = (colId: string) => {
-    return orders.filter(order => {
-      const colItems = order.items.filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, colId));
+    return (Array.isArray(orders) ? orders : []).filter(order => {
+      if (!order) return false;
+      const items = Array.isArray(order.items) ? order.items : [];
+      const colItems = items.filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, colId));
       return colItems.length > 0;
     });
   };
@@ -494,18 +497,21 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
     : columns.filter(c => c.id === mobileColFilter);
 
   // Filtered products in Kitchen Stock Modal
-  const filteredStockProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(stockSearchQuery.toLowerCase()) || 
-                          p.category.toLowerCase().includes(stockSearchQuery.toLowerCase());
+  const filteredStockProducts = (Array.isArray(products) ? products : []).filter(p => {
+    if (!p) return false;
+    const pName = String(p.name || '').toLowerCase();
+    const pCat = String(p.category || '').toLowerCase();
+    const q = String(stockSearchQuery || '').toLowerCase();
+    const matchesSearch = pName.includes(q) || pCat.includes(q);
     if (!matchesSearch) return false;
 
     if (stockCategoryFilter === 'All') return true;
     if (stockCategoryFilter === 'OutOfStock') return !p.inStock;
     if (stockCategoryFilter === 'InStock') return p.inStock;
-    return p.category.toLowerCase().includes(stockCategoryFilter.toLowerCase());
+    return pCat.includes(String(stockCategoryFilter || '').toLowerCase());
   });
 
-  const outOfStockCount = products.filter(p => !p.inStock).length;
+  const outOfStockCount = (Array.isArray(products) ? products : []).filter(p => p && !p.inStock).length;
 
   return (
     <div id="chefPage" data-testid="chefPage" className="min-h-screen md:h-screen md:max-h-screen bg-[#FFFFFF] text-[#111827] flex flex-col relative overflow-x-hidden">
@@ -708,7 +714,7 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                       </div>
                     ) : (
                       colOrders.map(order => {
-                        const colItems = order.items.filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, col.id));
+                        const colItems = (Array.isArray(order.items) ? order.items : []).filter(item => itemMatchesTab(item, activeTab) && isItemInColumn(item, col.id));
                         const nextCol = getNextColumnId(col.id);
 
                         return (
@@ -722,11 +728,11 @@ export const ChefView: React.FC<ChefViewProps> = ({ user, onLogout }) => {
                                 <h4 className="text-xs font-black text-[#4C1D95]">
                                   TABLE {order.tableNumber} - {order.customerName}
                                 </h4>
-                                <p className="text-[10px] text-[#4B5563] font-mono mt-0.5">Order #{order._id.slice(-4)}</p>
+                                <p className="text-[10px] text-[#4B5563] font-mono mt-0.5">Order #{String(order._id || '').slice(-4)}</p>
                               </div>
                               <span className="text-[10px] text-[#4B5563] font-semibold flex items-center gap-1 bg-white px-2 py-0.5 rounded-lg border border-[#D1D5DB]">
                                 <Clock size={10} className="text-[#4C1D95]" />
-                                {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {order.createdAt ? new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                               </span>
                             </div>
 

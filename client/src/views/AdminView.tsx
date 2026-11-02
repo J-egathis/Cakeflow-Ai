@@ -312,8 +312,8 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
     fetchStaffCredentials();
   }, []);
 
-  const handleUpdateStaffCredentials = async (target: 'admin' | 'chef' | 'servant', e: React.FormEvent) => {
-    e.preventDefault();
+  const handleUpdateStaffCredentials = async (target: 'admin' | 'chef' | 'servant', e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     const uName = (target === 'admin' ? adminUsernameInput : target === 'chef' ? chefUsernameInput : servantUsernameInput).trim();
     const pWord = (target === 'admin' ? adminPasswordInput : target === 'chef' ? chefPasswordInput : servantPasswordInput).trim();
 
@@ -1647,11 +1647,13 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
       </div>
 
       {/* Header */}
-      <header id="header" data-testid="header" className="bg-white/95 backdrop-blur-md border-b border-[#D1D5DB] px-4 md:px-6 py-3.5 flex flex-col md:flex-row items-stretch md:items-center justify-between z-10 shrink-0 gap-3 shadow-sm">
+      <header id="header" data-testid="header" className="bg-white/95 backdrop-blur-md border-b border-[#D1D5DB] px-4 md:pl-0 md:pr-6 py-3.5 flex flex-col md:flex-row items-stretch md:items-center justify-between z-10 shrink-0 gap-3 shadow-sm">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div id="dashboardLogo" data-testid="dashboardLogo" className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl overflow-hidden shadow-md shadow-[#4C1D95]/20 shrink-0 bg-[#4C1D95] border border-white/10 flex items-center justify-center">
-              <img src="/logo.png" alt="VPN Logo" className="w-full h-full object-contain brightness-150 contrast-125" />
+          <div className="flex items-center gap-2.5 md:gap-0">
+            <div className="flex items-center justify-center md:w-[72px] shrink-0">
+              <div id="dashboardLogo" data-testid="dashboardLogo" className="w-10 h-10 rounded-xl overflow-hidden shadow-md shadow-[#4C1D95]/20 shrink-0 bg-[#4C1D95] border border-white/10 flex items-center justify-center">
+                <img src="/logo.png" alt="VPN Logo" className="w-full h-full object-contain brightness-150 contrast-125" />
+              </div>
             </div>
             <div>
               <h1 id="dashboardTitle" data-testid="dashboardTitle" className="font-extrabold text-base md:text-lg tracking-tight text-[#4C1D95]">
@@ -1691,11 +1693,11 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
         {/* Left Nav Bar (Desktop - Adjustable Collapsible/Expandable Rail) */}
         <aside
           className={`hidden md:flex flex-col ${
-            isSidebarCollapsed ? 'w-[74px] items-center px-2.5 py-4' : 'w-60 lg:w-64 p-3.5'
+            isSidebarCollapsed ? 'w-[72px] items-center px-0 py-4' : 'w-60 lg:w-64 p-4'
           } bg-white border-r border-[#D1D5DB] shadow-sm z-20 shrink-0 overflow-y-auto overflow-x-hidden transition-all duration-300 gap-3`}
         >
           {/* Sidebar Toggle / Adjust Header */}
-          <div className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between px-1'} pb-2 border-b border-gray-100`}>
+          <div className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between px-1'} pb-2.5 border-b border-gray-100`}>
             {!isSidebarCollapsed && (
               <span className="text-[11px] font-black uppercase tracking-wider text-[#4B5563]">
                 Navigation
@@ -1704,7 +1706,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
             <button
               onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
               title={isSidebarCollapsed ? 'Expand Sidebar Menu' : 'Collapse Sidebar Menu'}
-              className="w-9 h-9 rounded-xl bg-violet-50 hover:bg-[#4C1D95] text-[#4C1D95] hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-xs"
+              className="w-10 h-10 rounded-xl bg-violet-50 hover:bg-[#4C1D95] text-[#4C1D95] hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-xs shrink-0"
             >
               <ChevronRight size={16} className={`transition-transform duration-300 ${isSidebarCollapsed ? '' : 'rotate-180'}`} />
             </button>
@@ -1722,7 +1724,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               }}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'overview'
@@ -1745,7 +1747,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               }}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-between'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer relative whitespace-nowrap ${
                 activeTab === 'reception'
@@ -1753,7 +1755,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   : 'text-[#4B5563] hover:bg-violet-50 hover:text-[#4C1D95]'
               }`}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center gap-3">
                 <Receipt size={17} className="shrink-0" />
                 {!isSidebarCollapsed && <span>Reception & Billing</span>}
               </div>
@@ -1762,7 +1764,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   id="receptionBadge"
                   data-testid="receptionBadge"
                   className={`${
-                    isSidebarCollapsed ? 'absolute -top-1 -right-1 px-1.5 py-0.2' : 'px-1.5 py-0.5 ml-1'
+                    isSidebarCollapsed ? 'absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 flex items-center justify-center' : 'px-1.5 py-0.5 ml-1'
                   } bg-[#4C1D95] text-white text-[9px] font-black rounded-full animate-pulse border border-white`}
                 >
                   {receptionOrders.length}
@@ -1777,7 +1779,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               onClick={() => setActiveTab('tables')}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'tables'
@@ -1799,7 +1801,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               }}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-between'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer relative whitespace-nowrap ${
                 activeTab === 'foods'
@@ -1807,14 +1809,14 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   : 'text-[#4B5563] hover:bg-violet-50 hover:text-[#4C1D95]'
               }`}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center gap-3">
                 <Utensils size={17} className="shrink-0" />
                 {!isSidebarCollapsed && <span>Food Items & Menu</span>}
               </div>
               {allProducts.length > 0 && (
                 <span
                   className={`${
-                    isSidebarCollapsed ? 'absolute -top-1 -right-1 px-1.5 py-0.2' : 'px-1.5 py-0.5 ml-1'
+                    isSidebarCollapsed ? 'absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 flex items-center justify-center' : 'px-1.5 py-0.5 ml-1'
                   } bg-emerald-500 text-white text-[9px] font-black rounded-full shadow-xs`}
                 >
                   {allProducts.length}
@@ -1832,7 +1834,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               }}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'sold_unsold'
@@ -1854,7 +1856,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               }}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'inventory'
@@ -1873,7 +1875,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               onClick={() => setActiveTab('accounts')}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'accounts'
@@ -1892,7 +1894,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               onClick={() => setActiveTab('expenses')}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'expenses'
@@ -1914,7 +1916,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
               }}
               className={`${
                 isSidebarCollapsed
-                  ? 'w-11 h-11 rounded-full justify-center'
+                  ? 'w-10 h-10 rounded-full justify-center'
                   : 'w-full text-left px-3.5 py-2.5 rounded-xl justify-start gap-3'
               } text-xs font-extrabold transition-all flex items-center cursor-pointer whitespace-nowrap ${
                 activeTab === 'staff_logins'
@@ -2027,7 +2029,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                 </div>
 
                 {/* Admin Update Form */}
-                <form onSubmit={(e) => handleUpdateStaffCredentials('admin', e)} className="flex flex-col flex-1 justify-between gap-4">
+                <div className="flex flex-col flex-1 justify-between gap-4">
                   <div className="space-y-4">
                     <div>
                       <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
@@ -2035,11 +2037,14 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       </label>
                       <input
                         id="adminUsernameInput"
+                        name="admin_config_username"
+                        autoComplete="off"
                         data-testid="adminUsernameInput"
                         type="text"
                         required
                         value={adminUsernameInput}
                         onChange={(e) => setAdminUsernameInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateStaffCredentials('admin'); }}
                         placeholder="Enter Admin Username (e.g. admin)"
                         className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl px-4 py-3 text-sm font-bold text-[#111827] outline-none transition-all"
                       />
@@ -2052,21 +2057,24 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       <div className="relative">
                         <input
                           id="adminPasswordInput"
+                          name="admin_config_password"
+                          autoComplete="new-password"
                           data-testid="adminPasswordInput"
                           type={showAdminPassword ? 'text' : 'password'}
                           required
                           value={adminPasswordInput}
                           onChange={(e) => setAdminPasswordInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateStaffCredentials('admin'); }}
                           placeholder="Enter Admin Password"
                           className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl pl-4 pr-11 py-3 text-sm font-mono font-bold text-[#111827] outline-none transition-all"
                         />
                         <button
                           type="button"
                           onClick={() => setShowAdminPassword(!showAdminPassword)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#4B5563] hover:text-[#4C1D95] cursor-pointer"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-lg leading-none select-none transition-transform duration-150 hover:scale-110 active:scale-95 cursor-pointer"
                           title={showAdminPassword ? 'Hide Password' : 'Show Password'}
                         >
-                          {showAdminPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                          {showAdminPassword ? '🐵' : '🙈'}
                         </button>
                       </div>
                     </div>
@@ -2075,14 +2083,15 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   <button
                     id="saveAdminCredentialsBtn"
                     data-testid="saveAdminCredentialsBtn"
-                    type="submit"
+                    type="button"
+                    onClick={() => handleUpdateStaffCredentials('admin')}
                     disabled={savingAdminCreds}
                     className="w-full py-3.5 px-4 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-md shadow-[#4C1D95]/20 cursor-pointer active:scale-[0.98]"
                   >
                     <CheckCircle size={16} className="shrink-0" />
                     <span>{savingAdminCreds ? 'Updating Admin Login...' : 'Update Admin Username & Password'}</span>
                   </button>
-                </form>
+                </div>
               </div>
 
               {/* CARD 2: CHEF LOGIN CREDENTIALS */}
@@ -2130,7 +2139,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                 </div>
 
                 {/* Chef Update Form */}
-                <form onSubmit={(e) => handleUpdateStaffCredentials('chef', e)} className="flex flex-col flex-1 justify-between gap-4">
+                <div className="flex flex-col flex-1 justify-between gap-4">
                   <div className="space-y-4">
                     <div>
                       <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
@@ -2138,11 +2147,14 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       </label>
                       <input
                         id="chefUsernameInput"
+                        name="chef_config_username"
+                        autoComplete="off"
                         data-testid="chefUsernameInput"
                         type="text"
                         required
                         value={chefUsernameInput}
                         onChange={(e) => setChefUsernameInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateStaffCredentials('chef'); }}
                         placeholder="Enter Chef Username (e.g. chef)"
                         className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl px-4 py-3 text-sm font-bold text-[#111827] outline-none transition-all"
                       />
@@ -2155,21 +2167,24 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       <div className="relative">
                         <input
                           id="chefPasswordInput"
+                          name="chef_config_password"
+                          autoComplete="new-password"
                           data-testid="chefPasswordInput"
                           type={showChefPassword ? 'text' : 'password'}
                           required
                           value={chefPasswordInput}
                           onChange={(e) => setChefPasswordInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateStaffCredentials('chef'); }}
                           placeholder="Enter Chef Password"
                           className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl pl-4 pr-11 py-3 text-sm font-mono font-bold text-[#111827] outline-none transition-all"
                         />
                         <button
                           type="button"
                           onClick={() => setShowChefPassword(!showChefPassword)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#4B5563] hover:text-[#4C1D95] cursor-pointer"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-lg leading-none select-none transition-transform duration-150 hover:scale-110 active:scale-95 cursor-pointer"
                           title={showChefPassword ? 'Hide Password' : 'Show Password'}
                         >
-                          {showChefPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                          {showChefPassword ? '🐵' : '🙈'}
                         </button>
                       </div>
                     </div>
@@ -2178,14 +2193,15 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   <button
                     id="saveChefCredentialsBtn"
                     data-testid="saveChefCredentialsBtn"
-                    type="submit"
+                    type="button"
+                    onClick={() => handleUpdateStaffCredentials('chef')}
                     disabled={savingChefCreds}
                     className="w-full py-3.5 px-4 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-md shadow-[#4C1D95]/20 cursor-pointer active:scale-[0.98]"
                   >
                     <CheckCircle size={16} className="shrink-0" />
                     <span>{savingChefCreds ? 'Updating Chef Login...' : 'Update Chef Username & Password'}</span>
                   </button>
-                </form>
+                </div>
               </div>
 
               {/* CARD 3: SERVANT / WAITER LOGIN CREDENTIALS */}
@@ -2233,7 +2249,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                 </div>
 
                 {/* Servant Update Form */}
-                <form onSubmit={(e) => handleUpdateStaffCredentials('servant', e)} className="flex flex-col flex-1 justify-between gap-4">
+                <div className="flex flex-col flex-1 justify-between gap-4">
                   <div className="space-y-4">
                     <div>
                       <label className="block text-xs font-extrabold text-[#4B5563] uppercase tracking-wider mb-1.5">
@@ -2241,11 +2257,14 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       </label>
                       <input
                         id="servantUsernameInput"
+                        name="servant_config_username"
+                        autoComplete="off"
                         data-testid="servantUsernameInput"
                         type="text"
                         required
                         value={servantUsernameInput}
                         onChange={(e) => setServantUsernameInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateStaffCredentials('servant'); }}
                         placeholder="Enter Servant Username (e.g. waiter / servant)"
                         className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl px-4 py-3 text-sm font-bold text-[#111827] outline-none transition-all"
                       />
@@ -2258,21 +2277,24 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       <div className="relative">
                         <input
                           id="servantPasswordInput"
+                          name="servant_config_password"
+                          autoComplete="new-password"
                           data-testid="servantPasswordInput"
                           type={showServantPassword ? 'text' : 'password'}
                           required
                           value={servantPasswordInput}
                           onChange={(e) => setServantPasswordInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleUpdateStaffCredentials('servant'); }}
                           placeholder="Enter Servant Password"
                           className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] focus:bg-white rounded-xl pl-4 pr-11 py-3 text-sm font-mono font-bold text-[#111827] outline-none transition-all"
                         />
                         <button
                           type="button"
                           onClick={() => setShowServantPassword(!showServantPassword)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#4B5563] hover:text-[#4C1D95] cursor-pointer"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-lg leading-none select-none transition-transform duration-150 hover:scale-110 active:scale-95 cursor-pointer"
                           title={showServantPassword ? 'Hide Password' : 'Show Password'}
                         >
-                          {showServantPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                          {showServantPassword ? '🐵' : '🙈'}
                         </button>
                       </div>
                     </div>
@@ -2281,14 +2303,15 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   <button
                     id="saveServantCredentialsBtn"
                     data-testid="saveServantCredentialsBtn"
-                    type="submit"
+                    type="button"
+                    onClick={() => handleUpdateStaffCredentials('servant')}
                     disabled={savingServantCreds}
                     className="w-full py-3.5 px-4 bg-[#4C1D95] hover:bg-[#5B21B6] text-white font-extrabold rounded-xl text-xs sm:text-sm transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-md shadow-[#4C1D95]/20 cursor-pointer active:scale-[0.98]"
                   >
                     <CheckCircle size={16} className="shrink-0" />
                     <span>{savingServantCreds ? 'Updating Servant Login...' : 'Update Servant Username & Password'}</span>
                   </button>
-                </form>
+                </div>
               </div>
             </div>
           </div>
@@ -3148,13 +3171,13 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                               title="Select all filtered bills"
                             />
                           </th>
-                          <th className="p-3 sm:p-4">Order ID</th>
-                          <th className="p-3 sm:p-4">Table #</th>
-                          <th className="p-3 sm:p-4">Customer</th>
-                          <th className="p-3 sm:p-4">Payment Method</th>
-                          <th className="p-3 sm:p-4">Amount Paid</th>
-                          <th className="p-3 sm:p-4">Time Settled</th>
-                          <th className="p-3 sm:p-4 text-center">Receipt</th>
+                          <th className="p-3 sm:p-4 whitespace-nowrap">Order ID</th>
+                          <th className="p-3 sm:p-4 whitespace-nowrap">Table #</th>
+                          <th className="p-3 sm:p-4 whitespace-nowrap">Customer</th>
+                          <th className="p-3 sm:p-4 whitespace-nowrap">Payment Method</th>
+                          <th className="p-3 sm:p-4 whitespace-nowrap">Amount Paid</th>
+                          <th className="p-3 sm:p-4 whitespace-nowrap">Time Settled</th>
+                          <th className="p-3 sm:p-4 text-center whitespace-nowrap">Receipt</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#E5E7EB] text-[#111827]">
@@ -3174,15 +3197,15 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                                 className="w-4 h-4 accent-[#4C1D95] rounded cursor-pointer"
                               />
                             </td>
-                            <td className="p-3 sm:p-4 font-mono font-bold text-[#4C1D95]">#{order._id.slice(-6)}</td>
-                            <td className="p-3 sm:p-4 font-extrabold text-[#4C1D95] group-hover:underline">Table {order.tableNumber}</td>
-                            <td className="p-3 sm:p-4 font-semibold">{order.customerName}</td>
-                            <td className="p-3 sm:p-4">
-                              <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-[#4C1D95]/10 text-[#4C1D95] border border-[#4C1D95]/30">
+                            <td className="p-3 sm:p-4 font-mono font-bold text-[#4C1D95] whitespace-nowrap">#{order._id.slice(-6)}</td>
+                            <td className="p-3 sm:p-4 font-extrabold text-[#4C1D95] group-hover:underline whitespace-nowrap">Table {order.tableNumber}</td>
+                            <td className="p-3 sm:p-4 font-semibold whitespace-nowrap">{order.customerName}</td>
+                            <td className="p-3 sm:p-4 whitespace-nowrap">
+                              <span className="inline-flex items-center justify-center whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-black uppercase bg-[#4C1D95]/10 text-[#4C1D95] border border-[#4C1D95]/30">
                                 {order.paymentMethod || 'CASH'}
                               </span>
                             </td>
-                            <td className="p-3 sm:p-4 font-black font-mono text-emerald-700">
+                            <td className="p-3 sm:p-4 font-black font-mono text-emerald-700 whitespace-nowrap">
                               <div className="flex items-center gap-1.5">
                                 <span>₹{order.totalAmount?.toFixed(2)}</span>
                                 {getOrderEffectiveGstRate(order) > 0 && (
@@ -3361,11 +3384,38 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                   <h3 className="font-extrabold text-sm text-[#111827]">Category Sales Share</h3>
                   <PieIcon size={16} className="text-[#4C1D95]" />
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-[210px] overflow-y-auto no-scrollbar pr-0.5">
                   {(() => {
-                    const categories = (displayData?.categoryBreakdown && displayData.categoryBreakdown.length > 0)
+                    const baseCategories = (displayData?.categoryBreakdown && displayData.categoryBreakdown.length > 0)
                       ? displayData.categoryBreakdown
                       : defaultDashboardData.categoryBreakdown;
+
+                    const catMap = new Map<string, { category: string; sales: number; percent: number }>();
+                    baseCategories.forEach((c: any) => {
+                      const name = (c?.category || '').trim();
+                      if (name) {
+                        catMap.set(name.toLowerCase(), {
+                          category: name,
+                          sales: Number(c.sales) || 0,
+                          percent: Number(c.percent) || 0
+                        });
+                      }
+                    });
+
+                    (allProducts || []).forEach((p: any) => {
+                      const name = (p?.category || '').trim();
+                      if (name && !catMap.has(name.toLowerCase())) {
+                        catMap.set(name.toLowerCase(), {
+                          category: name,
+                          sales: 0,
+                          percent: 0
+                        });
+                      }
+                    });
+
+                    const categories = Array.from(catMap.values()).sort(
+                      (a, b) => (b.sales - a.sales) || a.category.localeCompare(b.category)
+                    );
 
                     if (categories.length === 0) {
                       return (
@@ -3382,7 +3432,10 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                           <span className="text-[#4C1D95] font-mono">₹{cat.sales || 0} ({cat.percent || 0}%)</span>
                         </div>
                         <div className="w-full bg-[#FFFFFF] border border-[#D1D5DB] rounded-full h-2.5 overflow-hidden">
-                          <div className="h-full bg-[#4C1D95] rounded-full transition-all duration-500" style={{ width: `${Math.max(5, cat.percent || 0)}%` }} />
+                          <div
+                            className="h-full bg-[#4C1D95] rounded-full transition-all duration-500"
+                            style={{ width: `${(cat.sales || 0) > 0 ? Math.max(5, cat.percent || 0) : 0}%` }}
+                          />
                         </div>
                       </div>
                     ));
@@ -3467,8 +3520,12 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                       return { x, y, hour: p.hour, orders: p.orders || 0 };
                     });
 
+                    // Smooth cubic Bezier curve through all hourly data points
                     const linePath = points.reduce((acc: string, pt: any, i: number) => {
-                      return i === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`;
+                      if (i === 0) return `M ${pt.x} ${pt.y}`;
+                      const prev = points[i - 1];
+                      const midX = (prev.x + pt.x) / 2;
+                      return `${acc} C ${midX} ${prev.y}, ${midX} ${pt.y}, ${pt.x} ${pt.y}`;
                     }, '');
 
                     const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - 15} L ${points[0].x} ${height - 15} Z`;
@@ -3788,15 +3845,15 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                                 className="w-4 h-4 accent-[#4C1D95] rounded cursor-pointer"
                               />
                             </td>
-                            <td className="p-4 font-mono font-bold text-[#4C1D95]">#{order._id.slice(-6)}</td>
-                            <td className="p-4 font-extrabold text-[#4C1D95] group-hover:underline">Table {order.tableNumber}</td>
-                            <td className="p-4 font-semibold">{order.customerName}</td>
+                            <td className="p-4 font-mono font-bold text-[#4C1D95] whitespace-nowrap">#{order._id.slice(-6)}</td>
+                            <td className="p-4 font-extrabold text-[#4C1D95] group-hover:underline whitespace-nowrap">Table {order.tableNumber}</td>
+                            <td className="p-4 font-semibold whitespace-nowrap">{order.customerName}</td>
                             <td className="p-4 text-[11px] text-[#4B5563] font-medium max-w-[200px] truncate">
                               {order.items?.map((i: any) => `${i.quantity}x ${i.product?.name || i.name}`).join(', ')}
                             </td>
-                            <td className="p-4 font-black font-mono text-emerald-700">₹{order.totalAmount?.toFixed(2)}</td>
-                            <td className="p-4">
-                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase shadow-xs ${
+                            <td className="p-4 font-black font-mono text-emerald-700 whitespace-nowrap">₹{order.totalAmount?.toFixed(2)}</td>
+                            <td className="p-4 whitespace-nowrap">
+                              <span className={`inline-flex items-center justify-center whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-black uppercase shadow-xs ${
                                 order.status === 'served' || order.paymentStatus === 'paid'
                                   ? 'bg-emerald-500 text-white'
                                   : order.status === 'cancelled'
@@ -3806,7 +3863,7 @@ export const AdminView: React.FC<AdminViewProps> = ({ user, onLogout }) => {
                                 {order.paymentStatus === 'paid' ? 'PAID' : order.status}
                               </span>
                             </td>
-                            <td className="p-4 text-[#4B5563] font-semibold">
+                            <td className="p-4 text-[#4B5563] font-semibold whitespace-nowrap">
                               {new Date(order.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} {' '}
                               {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </td>

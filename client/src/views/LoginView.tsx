@@ -10,6 +10,7 @@ interface LoginViewProps {
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [tablesList, setTablesList] = useState<number[]>([1, 2, 3, 4, 5, 6, 7]);
@@ -31,8 +32,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     setError('');
     setLoading(true);
     try {
-      const user = await authApi.login(username, password);
-      setTimeout(() => onLoginSuccess(user), 600);
+      authApi.logout();
+      const user = await authApi.login(username.trim(), password.trim());
+      onLoginSuccess(user);
     } catch (err: any) {
       setError(err.message || 'Login failed. Please check credentials.');
       setLoading(false);
@@ -118,17 +120,28 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
 
           <div>
             <label className="block text-xs font-bold text-[#4B5563] uppercase tracking-wider mb-1.5">Password</label>
-            <input
-              id="password"
-              name="password"
-              data-testid="password"
-              type="password"
-              required
-              className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] rounded-xl px-4 py-3 text-sm focus:outline-none transition-colors text-[#111827]"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+            <div className="relative">
+              <input
+                id="password"
+                name="password"
+                data-testid="password"
+                type={showPassword ? 'text' : 'password'}
+                required
+                className="w-full bg-[#F9FAFB] border border-[#D1D5DB] focus:border-[#4C1D95] rounded-xl pl-4 pr-12 py-3 text-sm focus:outline-none transition-colors text-[#111827]"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-lg leading-none select-none transition-transform duration-150 hover:scale-110 active:scale-95 cursor-pointer"
+                title={showPassword ? 'Hide Password' : 'Show Password'}
+                aria-label={showPassword ? 'Hide Password' : 'Show Password'}
+              >
+                {showPassword ? '🐵' : '🙈'}
+              </button>
+            </div>
           </div>
 
           <button

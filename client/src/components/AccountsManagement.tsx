@@ -561,9 +561,6 @@ export const AccountsManagement: React.FC<AccountsManagementProps> = ({
                   <h2 className="text-base sm:text-lg md:text-xl font-black text-[#111827] tracking-tight">
                     {mode === 'expenses' ? 'Daily Shop Expenses Tracker' : 'Accounts & Financial Statement'}
                   </h2>
-                  <span className="text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-violet-100 text-[#4C1D95] border border-violet-200">
-                    {periodLabel} ({activeDaysCount} {activeDaysCount === 1 ? 'Day' : 'Days'})
-                  </span>
                 </div>
                 <button
                   onClick={() => fetchAccountSummary(dateFilter, customStartDate, customEndDate)}
@@ -883,12 +880,12 @@ export const AccountsManagement: React.FC<AccountsManagementProps> = ({
                           {exp.expenseDate ? new Date(exp.expenseDate).toLocaleDateString('en-IN') : '-'}
                         </td>
                         <td className="py-3 px-4 font-extrabold text-[#111827]">{exp.title}</td>
-                        <td className="py-3 px-4">
-                          <span className="px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-violet-50 text-[#4C1D95] border border-violet-200">
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span className="inline-flex items-center justify-center whitespace-nowrap px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-violet-50 text-[#4C1D95] border border-violet-200">
                             {exp.category}
                           </span>
                         </td>
-                        <td className="py-3 px-4 font-bold text-[#4B5563]">{exp.paymentMode || 'Cash'}</td>
+                        <td className="py-3 px-4 font-bold text-[#4B5563] whitespace-nowrap">{exp.paymentMode || 'Cash'}</td>
                         <td className="py-3 px-4 text-[#6B7280] max-w-xs truncate">{exp.notes || '-'}</td>
                         <td className="py-3 px-4 text-right font-black text-rose-600 whitespace-nowrap">
                           -₹{Number(exp.amount || 0).toLocaleString('en-IN')}
@@ -1099,67 +1096,67 @@ export const AccountsManagement: React.FC<AccountsManagementProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
-              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB]">
-                <div className="text-[11px] font-extrabold text-[#4B5563] uppercase">
-                  Avg Order Value (Per Bill)
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5 items-stretch">
+              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB] flex flex-col justify-between h-full min-h-[106px]">
+                <div className="text-[10.5px] font-extrabold text-[#4B5563] uppercase tracking-tight whitespace-nowrap truncate">
+                  Avg Order Value (Bill)
                 </div>
-                <div className="text-xl font-black text-[#4C1D95] mt-1">
+                <div className="text-xl font-black text-[#4C1D95] my-1.5 leading-none whitespace-nowrap">
                   ₹{averages.avgOrderValue.toLocaleString('en-IN')}
                 </div>
-                <div className="text-[11px] font-semibold text-[#6B7280] mt-1">
+                <div className="text-[11px] font-semibold text-[#6B7280] whitespace-nowrap truncate">
                   Avg {averages.avgItemsPerOrder} food items / order
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB]">
-                <div className="text-[11px] font-extrabold text-[#4B5563] uppercase">
+              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB] flex flex-col justify-between h-full min-h-[106px]">
+                <div className="text-[10.5px] font-extrabold text-[#4B5563] uppercase tracking-tight whitespace-nowrap truncate">
                   Avg Daily Sales Revenue
                 </div>
-                <div className="text-xl font-black text-[#111827] mt-1">
+                <div className="text-xl font-black text-[#111827] my-1.5 leading-none whitespace-nowrap">
                   ₹{averages.avgDailyRevenue.toLocaleString('en-IN')}
                 </div>
-                <div className="text-[11px] font-semibold text-[#6B7280] mt-1">
+                <div className="text-[11px] font-semibold text-[#6B7280] whitespace-nowrap truncate">
                   Per day average ({activeDaysCount}d period)
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB]">
-                <div className="text-[11px] font-extrabold text-[#4B5563] uppercase">
-                  Avg Daily Net Profit / Loss
+              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB] flex flex-col justify-between h-full min-h-[106px]">
+                <div className="text-[10.5px] font-extrabold text-[#4B5563] uppercase tracking-tight whitespace-nowrap truncate">
+                  Avg Daily Profit / Loss
                 </div>
                 <div
-                  className={`text-xl font-black mt-1 ${
+                  className={`text-xl font-black my-1.5 leading-none whitespace-nowrap ${
                     averages.avgDailyProfit >= 0 ? 'text-emerald-700' : 'text-rose-600'
                   }`}
                 >
                   {averages.avgDailyProfit >= 0 ? '+' : '-'}₹{Math.abs(averages.avgDailyProfit).toLocaleString('en-IN')}
                 </div>
-                <div className="text-[11px] font-semibold text-[#6B7280] mt-1">
-                  Net earnings per day after costs
+                <div className="text-[11px] font-semibold text-[#6B7280] whitespace-nowrap truncate">
+                  Net profit per day after costs
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB]">
-                <div className="text-[11px] font-extrabold text-[#4B5563] uppercase">
+              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB] flex flex-col justify-between h-full min-h-[106px]">
+                <div className="text-[10.5px] font-extrabold text-[#4B5563] uppercase tracking-tight whitespace-nowrap truncate">
                   Avg Spend Per Table
                 </div>
-                <div className="text-xl font-black text-[#111827] mt-1">
+                <div className="text-xl font-black text-[#111827] my-1.5 leading-none whitespace-nowrap">
                   ₹{averages.avgSpendPerTable.toLocaleString('en-IN')}
                 </div>
-                <div className="text-[11px] font-semibold text-[#6B7280] mt-1">
+                <div className="text-[11px] font-semibold text-[#6B7280] whitespace-nowrap truncate">
                   Across {summary.uniqueTablesCount} active table(s)
                 </div>
               </div>
 
-              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB]">
-                <div className="text-[11px] font-extrabold text-[#4B5563] uppercase">
+              <div className="p-4 rounded-2xl bg-[#F9FAFB] border border-[#E5E7EB] flex flex-col justify-between h-full min-h-[106px]">
+                <div className="text-[10.5px] font-extrabold text-[#4B5563] uppercase tracking-tight whitespace-nowrap truncate">
                   Total Units / Plates Sold
                 </div>
-                <div className="text-xl font-black text-emerald-700 mt-1">
+                <div className="text-xl font-black text-emerald-700 my-1.5 leading-none whitespace-nowrap">
                   {summary.totalItemsSold} Units
                 </div>
-                <div className="text-[11px] font-semibold text-[#6B7280] mt-1">
+                <div className="text-[11px] font-semibold text-[#6B7280] whitespace-nowrap truncate">
                   From {summary.totalOrdersCount} valid customer orders
                 </div>
               </div>

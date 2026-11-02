@@ -20,72 +20,12 @@ const generateQrDataUrl = async (text) => {
 
 const seedMySQL = async () => {
   try {
-    // 1. Seed Users
-    let savedStaffCreds = null;
-    try {
-      if (fs.existsSync(STAFF_CREDENTIALS_FILE)) {
-        savedStaffCreds = JSON.parse(fs.readFileSync(STAFF_CREDENTIALS_FILE, 'utf8'));
-      }
-    } catch (e) {}
-
-    const envPasswords = {
-      admin: process.env.ADMIN_PASSWORD,
-      chef: process.env.CHEF_PASSWORD,
-      waiter: process.env.WAITER_PASSWORD,
-      cashier: process.env.CASHIER_PASSWORD,
-      customer: process.env.CUSTOMER_PASSWORD
-    };
-    const demoPasswords = { admin: 'admin123', chef: 'chef123', waiter: 'waiter123', cashier: 'cashier123', customer: 'customer123' };
-
-    const defaultUsers = [
-      { username: savedStaffCreds?.admin?.username || 'admin', group: 'admin', role: 'admin', name: 'Store Owner' },
-      { username: savedStaffCreds?.chef?.username || 'chef', group: 'chef', role: 'cake_chef', name: 'Head Chef' },
-      { username: savedStaffCreds?.servant?.username || 'waiter', group: 'waiter', role: 'waiter', name: 'Table Servant' },
-      { username: 'cashier', group: 'cashier', role: 'cashier', name: 'Front Desk Cashier' },
-      { username: 'customer', group: 'customer', role: 'customer', name: 'Table 1 Guest' }
-    ];
-
-    for (const { group, ...u } of defaultUsers) {
-      if (group === 'admin' && savedStaffCreds?.admin?.username && savedStaffCreds?.admin?.password) {
-        const existingAdmin = await User.findOne({ where: { role: 'admin' }, order: [['id', 'ASC']] });
-        if (!existingAdmin) {
-          const password = await bcrypt.hash(savedStaffCreds.admin.password, 10);
-          await User.create({ ...u, username: savedStaffCreds.admin.username, password });
-        }
-        continue;
-      }
-      if (group === 'chef' && savedStaffCreds?.chef?.username && savedStaffCreds?.chef?.password) {
-        const existingChef = await User.findOne({ where: { role: { [Op.in]: ['cake_chef', 'snacks_chef'] } }, order: [['id', 'ASC']] });
-        if (!existingChef) {
-          const password = await bcrypt.hash(savedStaffCreds.chef.password, 10);
-          await User.create({ ...u, username: savedStaffCreds.chef.username, password });
-        }
-        continue;
-      }
-      if (group === 'waiter' && savedStaffCreds?.servant?.username && savedStaffCreds?.servant?.password) {
-        const existingServant = await User.findOne({ where: { role: 'waiter' }, order: [['id', 'ASC']] });
-        if (!existingServant) {
-          const password = await bcrypt.hash(savedStaffCreds.servant.password, 10);
-          await User.create({ ...u, username: savedStaffCreds.servant.username, password });
-        }
-        continue;
-      }
-
-      const envPass = envPasswords[group];
-      const existing = await User.findOne({ where: { username: u.username } });
-      if (!existing) {
-        const password = await bcrypt.hash(envPass || demoPasswords[group], 10);
-        await User.create({ ...u, password });
-      } else if (envPass && !(await existing.comparePassword(envPass))) {
-        existing.password = await bcrypt.hash(envPass, 10);
-        await existing.save();
-        console.log(`🔑 Password updated from .env for user: ${u.username}`);
-      }
-    }
-    if (!envPasswords.admin) {
-      console.warn('⚠️ ADMIN_PASSWORD not set in .env. Default demo admin password may still be active!');
-    }
-    console.log('✅ Default users verified in MySQL.');
+    // 1. Seed & Sync Staff Users (Admin, Chef, Servant) strictly from Staff Logins Config
+    const authRouter = require('../routes/auth');
+    const staffConfig = await authRouter.loadStaffCredentialsConfig();
+    await authRouter.saveStaffCredentialsConfig(staffConfig);
+    await authRouter.syncStaffUsersToConfig(staffConfig);
+    console.log('✅ Staff users (Admin, Chef, Servant) synced with Staff Logins config in MySQL.');
 
     // 2. Seed Products
     const productCount = await Product.count();

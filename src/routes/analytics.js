@@ -136,9 +136,19 @@ router.get('/', staffOnly, async (req, res) => {
     });
     const avgPrepTimeMins = prepCount > 0 ? Math.round(totalPrepTime / prepCount) : 0;
 
-    // 1. CATEGORY SALES BREAKDOWN (Dynamic actual restaurant categories)
+    // 1. CATEGORY SALES BREAKDOWN (Dynamic actual restaurant categories, including all menu categories)
     const categorySalesMap = {};
     let totalItemSalesSum = 0;
+
+    try {
+      const allMenuProducts = await Product.findAll({ attributes: ['category'] });
+      allMenuProducts.forEach(p => {
+        const c = (p.category || '').trim();
+        if (c && !(c in categorySalesMap)) {
+          categorySalesMap[c] = 0;
+        }
+      });
+    } catch (e) {}
 
     validOrders.forEach(o => {
       const items = o.items || [];
@@ -152,16 +162,13 @@ router.get('/', staffOnly, async (req, res) => {
       });
     });
 
-    let categoryBreakdown = [];
-    if (totalItemSalesSum > 0) {
-      categoryBreakdown = Object.entries(categorySalesMap)
-        .sort((a, b) => b[1] - a[1])
-        .map(([category, sales]) => ({
-          category,
-          sales: Math.round(sales),
-          percent: Math.round((sales / totalItemSalesSum) * 100)
-        }));
-    }
+    const categoryBreakdown = Object.entries(categorySalesMap)
+      .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+      .map(([category, sales]) => ({
+        category,
+        sales: Math.round(sales),
+        percent: totalItemSalesSum > 0 ? Math.round((sales / totalItemSalesSum) * 100) : 0
+      }));
 
     // 2. PEAK DINING HOURS BREAKDOWN (8 AM to 10 PM)
     const peakHourSlots = [

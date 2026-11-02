@@ -73,6 +73,26 @@ body::-webkit-scrollbar,
   -ms-overflow-style: none;
 }
 
+/* Hide up/down spinner arrows in number inputs */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Hide browser native password reveal eye so custom monkey toggle stays clean */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear,
+input::-ms-reveal,
+input::-ms-clear {
+  display: none !important;
+}
+
 /* Light Glass Panel */
 .glass-panel {
   background: rgba(255, 255, 255, 0.9);

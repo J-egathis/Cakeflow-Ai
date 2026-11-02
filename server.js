@@ -59,10 +59,15 @@ app.use(express.static(path.join(__dirname, 'client/dist'), {
     if (filePath.includes(`${path.sep}assets${path.sep}`)) {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else if (filePath.endsWith('.html')) {
-      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
     }
   }
 }));
+
+// Never return index.html for missing static asset chunks
+app.use('/assets', (req, res) => res.status(404).end());
 
 // API Routes
 app.use('/api/auth', require('./src/routes/auth'));
@@ -75,8 +80,11 @@ app.use('/api/tables', require('./src/routes/tables'));
 app.use('/api/categories', require('./src/routes/categories'));
 app.use('/api/system', require('./src/routes/system'));
 
-// Fallback to React index.html for SPA routing in client
+// Fallback to React index.html for SPA routing in client (never cache HTML so new builds load immediately)
 app.get('*', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(__dirname, 'client/dist/index.html'), (err) => {
     if (err) {
       res.status(200).send('CakeFlow AI Server is running (MySQL Backend).');

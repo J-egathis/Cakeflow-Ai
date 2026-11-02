@@ -1,32 +1,14 @@
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useEffect } from 'react';
 import { Routes, Route, useParams, useNavigate, Navigate } from 'react-router-dom';
 import { User } from './types';
 import { authApi } from './services/api';
 import { LoginView } from './views/LoginView';
-
-// Code-split heavy screens: each page downloads only its own code (QR menu & chef open much faster)
-const CustomerView = lazy(() => import('./views/CustomerView').then(m => ({ default: m.CustomerView })));
-const ReceiptView = lazy(() => import('./views/ReceiptView').then(m => ({ default: m.ReceiptView })));
-const ChefView = lazy(() => import('./views/ChefView').then(m => ({ default: m.ChefView })));
-const AdminView = lazy(() => import('./views/AdminView').then(m => ({ default: m.AdminView })));
-const BillingView = lazy(() => import('./views/BillingView').then(m => ({ default: m.BillingView })));
-const OrdersView = lazy(() => import('./views/OrdersView').then(m => ({ default: m.OrdersView })));
-
-// Warm up the most-used screen for the logged-in role in the background
-try {
-  const cachedUser = authApi.getCurrentUser();
-  if (cachedUser?.role === 'admin' || cachedUser?.role === 'cashier' || cachedUser?.role === 'waiter') {
-    import('./views/AdminView');
-  } else if (cachedUser?.role === 'cake_chef' || cachedUser?.role === 'snacks_chef') {
-    import('./views/ChefView');
-  }
-} catch (e) {}
-
-const PageLoader = () => (
-  <div className="min-h-screen flex items-center justify-center bg-white">
-    <div className="w-10 h-10 rounded-full border-4 border-[#4C1D95]/20 border-t-[#4C1D95] animate-spin" />
-  </div>
-);
+import { CustomerView } from './views/CustomerView';
+import { ReceiptView } from './views/ReceiptView';
+import { ChefView } from './views/ChefView';
+import { AdminView } from './views/AdminView';
+import { BillingView } from './views/BillingView';
+import { OrdersView } from './views/OrdersView';
 
 // Dedicated Wrapper Component for /table/:tableId route (QR Scan Mode)
 function CustomerTableWrapper() {
@@ -60,7 +42,8 @@ function ProtectedRoute({ element: Element, allowedRoles }: { element: any, allo
     return <Navigate to="/login" replace />;
   }
 
-  if (allowedRoles && !allowedRoles.includes(user.role) && user.role !== 'admin') {
+  if (allowedRoles && !allowedRoles.includes(user.role)) {
+    if (user.role === 'admin') return <Navigate to="/admin" replace />;
     if (user.role === 'cake_chef' || user.role === 'snacks_chef') return <Navigate to="/chef" replace />;
     if (user.role === 'cashier') return <Navigate to="/billing" replace />;
     return <Navigate to="/customer" replace />;
@@ -68,7 +51,7 @@ function ProtectedRoute({ element: Element, allowedRoles }: { element: any, allo
 
   const handleLogout = () => {
     authApi.logout();
-    navigate('/login');
+    navigate('/login', { replace: true });
   };
 
   return <Element user={user} onLogout={handleLogout} />;
@@ -87,15 +70,25 @@ function RootRedirect() {
 function App() {
   const navigate = useNavigate();
 
+  // Disable mouse right-click context menu across the app (keyboard shortcuts remain enabled)
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('contextmenu', handleContextMenu);
+    return () => {
+      window.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, []);
+
   const handleLoginSuccess = (user: User) => {
-    if (user.role === 'admin') navigate('/admin');
-    else if (user.role === 'cashier') navigate('/billing');
-    else if (user.role === 'cake_chef' || user.role === 'snacks_chef') navigate('/chef');
-    else navigate('/customer');
+    if (user.role === 'admin') navigate('/admin', { replace: true });
+    else if (user.role === 'cashier') navigate('/billing', { replace: true });
+    else if (user.role === 'cake_chef' || user.role === 'snacks_chef') navigate('/chef', { replace: true });
+    else navigate('/customer', { replace: true });
   };
 
   return (
-    <Suspense fallback={<PageLoader />}>
     <Routes>
       <Route path="/login" element={<LoginView onLoginSuccess={handleLoginSuccess} />} />
       <Route path="/table/:tableId" element={<CustomerTableWrapper />} />
@@ -116,7 +109,6 @@ function App() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="*" element={<RootRedirect />} />
     </Routes>
-    </Suspense>
   );
 }
 
